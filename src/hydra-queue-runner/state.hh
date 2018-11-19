@@ -6,6 +6,9 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <unistd.h>
+
+#include <experimental/optional>
 
 #include "db.hh"
 #include "token-server.hh"
@@ -15,7 +18,7 @@
 #include "pool.hh"
 #include "store-api.hh"
 #include "sync.hh"
-
+#include "util.hh"
 
 typedef unsigned int BuildID;
 
@@ -276,9 +279,13 @@ struct Machine
     }
 };
 
+typedef struct {
+  pid_t pid;
+  nix::Pipe to_notify;
+  nix::Pipe from_notify;
+} hydra_notify_state;
 
 class Config;
-
 
 class State
 {
@@ -291,6 +298,8 @@ private:
     const unsigned int retryInterval = 60; // seconds
     const float retryBackoff = 3.0;
     const unsigned int maxParallelCopyClosure = 4;
+
+    std::optional<hydra_notify_state> hydra_notify;
 
     nix::Path hydraData, logDir;
 

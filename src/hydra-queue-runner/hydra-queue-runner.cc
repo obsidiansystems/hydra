@@ -1,9 +1,13 @@
 #include <iostream>
 #include <thread>
 
+#include <string>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
+
+#include <experimental/optional>
 
 #include "state.hh"
 #include "build-result.hh"
@@ -15,6 +19,7 @@
 #include "json.hh"
 #include "s3-binary-cache-store.hh"
 #include "shared.hh"
+#include "util.hh"
 
 using namespace nix;
 
@@ -51,6 +56,7 @@ State::State()
     , maxLogSize(config->getIntOption("max_log_size", 64ULL << 20))
     , uploadLogsToBinaryCache(config->getBoolOption("upload_logs_to_binary_cache", false))
     , rootsDir(config->getStrOption("gc_roots_dir", fmt("%s/gcroots/per-user/%s/hydra-roots", settings.nixStateDir, getEnvOrDie("LOGNAME"))))
+    , hydra_notify(std::nullopt)
 {
     debug("using %d bytes for the NAR buffer", memoryTokens.capacity());
 
@@ -449,74 +455,108 @@ bool State::checkCachedFailure(Step::ptr step, Connection & conn)
     return false;
 }
 
-
 void State::notificationSender()
 {
-    while (true) {
-        try {
+  using namespace std::string_literals;
 
-            NotificationItem item;
-            {
-                auto notificationSenderQueue_(notificationSenderQueue.lock());
-                while (notificationSenderQueue_->empty())
-                    notificationSenderQueue_.wait(notificationSenderWakeup);
-                item = notificationSenderQueue_->front();
-                notificationSenderQueue_->pop();
-            }
+  while (true) {
+    try {
+      bool should_fork = false;
 
-            MaintainCount<counter> mc(nrNotificationsInProgress);
-
-            printMsg(lvlChatty, format("sending notification about build %1%") % item.id);
-
-            auto now1 = std::chrono::steady_clock::now();
-
-            Pid pid = startProcess([&]() {
-                Strings argv;
-                switch (item.type) {
-                    case NotificationItem::Type::BuildStarted:
-                        argv = {"hydra-notify", "build-started", std::to_string(item.id)};
-                        for (auto id : item.dependentIds)
-                            argv.push_back(std::to_string(id));
-                        break;
-                    case NotificationItem::Type::BuildFinished:
-                        argv = {"hydra-notify", "build-finished", std::to_string(item.id)};
-                        for (auto id : item.dependentIds)
-                            argv.push_back(std::to_string(id));
-                        break;
-                    case NotificationItem::Type::StepFinished:
-                        argv = {"hydra-notify", "step-finished", std::to_string(item.id), std::to_string(item.stepNr), item.logPath};
-                        break;
-                };
-                execvp("hydra-notify", (char * *) stringsToCharPtrs(argv).data()); // FIXME: remove cast
-                throw SysError("cannot start hydra-notify");
-            });
-
-            int res = pid.wait();
-
-            if (!statusOk(res))
-                throw Error("notification about build %d failed: %s", item.id, statusToString(res));
-
-            auto now2 = std::chrono::steady_clock::now();
-
-            if (item.type == NotificationItem::Type::BuildFinished) {
-                auto conn(dbPool.get());
-                pqxx::work txn(*conn);
-                txn.parameterized
-                    ("update Builds set notificationPendingSince = null where id = $1")
-                    (item.id)
-                    .exec();
-                txn.commit();
-            }
-
-            nrNotificationTimeMs += std::chrono::duration_cast<std::chrono::milliseconds>(now2 - now1).count();
-            nrNotificationsDone++;
-
-        } catch (std::exception & e) {
-            nrNotificationsFailed++;
-            printMsg(lvlError, format("notification sender: %1%") % e.what());
-            sleep(5);
+      if(hydra_notify) {
+        int status;
+        int result;
+        result = waitpid(hydra_notify->pid, &status, WNOHANG | WEXITED);
+        if (result == 0) {
+          should_fork = false;
+        } else if (result == -1) {
+          throw SysError ("something is horribly wrong with hydra-notify");
+        } else {
+          should_fork = true;
         }
+      } else {
+        should_fork = true;
+      }
+
+      if (should_fork) {
+        Pipe to, from;
+        pid_t new_pid;
+
+        to.create();
+
+        new_pid = startProcess([&]() {
+
+            if (dup2(to.readSide.get(), STDIN_FILENO) == -1) {
+              throw SysError("cannot dup input pipe to stdin");
+            }
+
+            execlp("hydra-notify", "hydra-notify", NULL);
+
+            throw SysError("cannot start hydra-notify");
+        });
+
+        hydra_notify = std::optional<hydra_notify_state> {{
+          .pid = new_pid,
+          .to_notify = std::move(to),
+          .from_notify = std::move(from)
+        }};
+      }
+
+      NotificationItem item;
+      {
+          auto notificationSenderQueue_(notificationSenderQueue.lock());
+          while (notificationSenderQueue_->empty())
+              notificationSenderQueue_.wait(notificationSenderWakeup);
+          item = notificationSenderQueue_->front();
+          notificationSenderQueue_->pop();
+      }
+
+
+      MaintainCount<counter> mc(nrNotificationsInProgress);
+
+      printMsg(lvlChatty, format("sending notification about build %1%") % item.id);
+
+      auto now1 = std::chrono::steady_clock::now();
+
+      std::string payload;
+
+      switch (item.type) {
+        case NotificationItem::Type::BuildStarted:
+          payload = "build-started"s + " "s + std::to_string(item.id);
+          break;
+        case NotificationItem::Type::BuildFinished:
+          payload = "build-finished"s + " "s + std::to_string(item.id);
+          break;
+        case NotificationItem::Type::StepFinished:
+          payload = "step-finished"s + " "s + std::to_string(item.id) + " "s + std::to_string(item.stepNr) + " "s + item.logPath;
+          break;
+      }
+
+      FILE* toNotify = fdopen(hydra_notify->to_notify.writeSide.get(), "w");
+
+      fprintf(toNotify, "%s\n", payload.c_str());
+
+      auto now2 = std::chrono::steady_clock::now();
+
+      if (item.type == NotificationItem::Type::BuildFinished) {
+          auto conn(dbPool.get());
+          pqxx::work txn(*conn);
+          txn.parameterized
+              ("update Builds set notificationPendingSince = null where id = $1")
+              (item.id)
+              .exec();
+          txn.commit();
+      }
+
+      nrNotificationTimeMs += std::chrono::duration_cast<std::chrono::milliseconds>(now2 - now1).count();
+      nrNotificationsDone++;
+
+  } catch (std::exception & e) {
+      nrNotificationsFailed++;
+      printMsg(lvlError, format("notification sender: %1%") % e.what());
+      sleep(5);
     }
+  }
 }
 
 

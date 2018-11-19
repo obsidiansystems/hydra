@@ -15,67 +15,72 @@ my $db = Hydra::Model::DB->new();
 
 my @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
 
-my $cmd = shift @ARGV or die "Syntax: hydra-notify build-started BUILD | build-finished BUILD-ID [BUILD-IDs...] | step-finished BUILD-ID STEP-NR LOG-PATH\n";
+my $note;
 
-my $buildId = shift @ARGV or die;
-my $build = $db->resultset('Builds')->find($buildId)
-    or die "build $buildId does not exist\n";
+foreach $note ( <STDIN> ) {
+  my @args = split(/ /,$note);
+  my $cmd = shift @args or die "Syntax: hydra-notify build-started BUILD | build-finished BUILD-ID [BUILD-IDs...] | step-finished BUILD-ID STEP-NR LOG-PATH\n";
+  my $buildId = shift @args or die "BUILD not supplied";
+  my $build = $db->resultset('Builds')->find($buildId)
+      or die "build $buildId does not exist\n";
 
-if ($cmd eq "build-finished") {
-    my $project = $build->project;
-    my $jobset = $build->jobset;
-    if (length($project->declfile) && $jobset->name eq ".jobsets" && $build->iscurrent) {
-        handleDeclarativeJobsetBuild($db, $project, $build);
-    }
-    my @dependents;
-    foreach my $id (@ARGV) {
-        my $dep = $db->resultset('Builds')->find($id)
-            or die "build $id does not exist\n";
-        push @dependents, $dep;
-    }
+  if ($cmd eq "build-finished") {
+      my $project = $build->project;
+      my $jobset = $build->jobset;
+      if (length($project->declfile) && $jobset->name eq ".jobsets" && $build->iscurrent) {
+          handleDeclarativeJobsetBuild($db, $project, $build);
+      }
+      my @dependents;
+      foreach my $id (@ARGV) {
+          my $dep = $db->resultset('Builds')->find($id)
+              or die "build $id does not exist\n";
+          push @dependents, $dep;
+      }
 
-    foreach my $plugin (@plugins) {
-        eval { $plugin->buildFinished($build, [@dependents]); };
-        if ($@) {
-            print STDERR "$plugin->buildFinished: $@\n";
-        }
-    }
+      foreach my $plugin (@plugins) {
+          eval { $plugin->buildFinished($build, [@dependents]); };
+          if ($@) {
+              print STDERR "$plugin->buildFinished: $@\n";
+          }
+      }
+  }
+
+  elsif ($cmd eq "build-queued") {
+      foreach my $plugin (@plugins) {
+          eval { $plugin->buildQueued($build); };
+          if ($@) {
+              print STDERR "$plugin->buildQueued: $@\n";
+          }
+      }
+  }
+
+  elsif ($cmd eq "build-started") {
+      foreach my $plugin (@plugins) {
+          eval { $plugin->buildStarted($build); };
+          if ($@) {
+              print STDERR "$plugin->buildStarted: $@\n";
+          }
+      }
+  }
+
+  elsif ($cmd eq "step-finished") {
+      die if scalar @ARGV < 2;
+      my $stepNr = shift @ARGV;
+      my $step = $build->buildsteps->find({stepnr => $stepNr})
+          or die "step $stepNr does not exist\n";
+      my $logPath = shift @ARGV;
+      $logPath = undef if $logPath eq "";
+
+      foreach my $plugin (@plugins) {
+          eval { $plugin->stepFinished($step, $logPath); };
+          if ($@) {
+              print STDERR "$plugin->stepFinished: $@\n";
+          }
+      }
+  }
+
+  else {
+      die "unknown action ‘$cmd’";
+  }
 }
 
-elsif ($cmd eq "build-queued") {
-    foreach my $plugin (@plugins) {
-        eval { $plugin->buildQueued($build); };
-        if ($@) {
-            print STDERR "$plugin->buildQueued: $@\n";
-        }
-    }
-}
-
-elsif ($cmd eq "build-started") {
-    foreach my $plugin (@plugins) {
-        eval { $plugin->buildStarted($build); };
-        if ($@) {
-            print STDERR "$plugin->buildStarted: $@\n";
-        }
-    }
-}
-
-elsif ($cmd eq "step-finished") {
-    die if scalar @ARGV < 2;
-    my $stepNr = shift @ARGV;
-    my $step = $build->buildsteps->find({stepnr => $stepNr})
-        or die "step $stepNr does not exist\n";
-    my $logPath = shift @ARGV;
-    $logPath = undef if $logPath eq "";
-
-    foreach my $plugin (@plugins) {
-        eval { $plugin->stepFinished($step, $logPath); };
-        if ($@) {
-            print STDERR "$plugin->stepFinished: $@\n";
-        }
-    }
-}
-
-else {
-    die "unknown action ‘$cmd’";
-}
