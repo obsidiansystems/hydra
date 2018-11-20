@@ -483,14 +483,21 @@ void State::notificationSender()
         pid_t new_pid;
 
         to.create();
+        from.create();
 
+        if (dup2(STDERR_FILENO, from.readSide.get()) == -1) {
+          throw SysError("cannot dup output pipe to our stdout");
+        }
         new_pid = startProcess([&]() {
 
             if (dup2(to.readSide.get(), STDIN_FILENO) == -1) {
               throw SysError("cannot dup input pipe to stdin");
             }
+            if (dup2(from.writeSide.get(), STDOUT_FILENO) == -1) {
+              throw SysError("cannot dup output pipe to stdout");
+            }
 
-            execlp("hydra-notify", "hydra-notify", NULL);
+            execlp("/var/lib/hydra/hydra-notify", "hydra-notify", NULL);
 
             throw SysError("cannot start hydra-notify");
         });
@@ -535,6 +542,7 @@ void State::notificationSender()
       FILE* toNotify = fdopen(hydra_notify->to_notify.writeSide.get(), "w");
 
       fprintf(toNotify, "%s\n", payload.c_str());
+      fflush(toNotify);
 
       auto now2 = std::chrono::steady_clock::now();
 
