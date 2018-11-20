@@ -19,7 +19,7 @@ my @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
 
 my $note;
 
-foreach $note ( <STDIN> ) {
+while ($note = <STDIN>) {
   my @args = split(/ /,$note);
   print "Args: @args\n";
   my $cmd = shift @args or die "Syntax: hydra-notify build-started BUILD | build-finished BUILD-ID [BUILD-IDs...] | step-finished BUILD-ID STEP-NR LOG-PATH\n";
