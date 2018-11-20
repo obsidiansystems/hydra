@@ -24,7 +24,6 @@ foreach $note ( <STDIN> ) {
   print "Args: @args\n";
   my $cmd = shift @args or die "Syntax: hydra-notify build-started BUILD | build-finished BUILD-ID [BUILD-IDs...] | step-finished BUILD-ID STEP-NR LOG-PATH\n";
   print "Parsed cmd: $cmd\n";
-  $fh->flush();
   my $buildId = shift @args or die "BUILD not supplied";
   my $build = $db->resultset('Builds')->find($buildId)
       or die "build $buildId does not exist\n";
@@ -71,7 +70,6 @@ foreach $note ( <STDIN> ) {
   elsif ($cmd eq "step-finished") {
       die if scalar @args < 2;
       print "Args for step-finished: @args\n";
-      $fh->flush();
       my $stepNr = shift @args;
       my $step = $build->buildsteps->find({stepnr => $stepNr})
           or die "step $stepNr does not exist\n";
