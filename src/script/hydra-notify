@@ -14,6 +14,7 @@ binmode STDERR, ":encoding(utf8)";
 my $config = getHydraConfig();
 
 my $db = Hydra::Model::DB->new();
+my $dbh = $db->storage->dbh;
 
 my @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
 
@@ -47,6 +48,7 @@ while ($note = <STDIN>) {
               print STDERR "$plugin->buildFinished: $@\n";
           }
       }
+      $dbh->do("update Builds set notificationPendingSince = null where id = '$buildId';");
   }
 
   elsif ($cmd eq "build-queued") {
