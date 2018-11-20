@@ -490,8 +490,7 @@ void State::notificationSender()
             if (dup2(to.readSide.get(), STDIN_FILENO) == -1) {
               throw SysError("cannot dup input pipe to stdin");
             }
-            if (dup2(STDERR_FILENO, STDOUT_FILENO) == -1) {
-            // if (dup2(from.writeSide.get(), STDOUT_FILENO) == -1) {
+            if (dup2(from.writeSide.get(), STDOUT_FILENO) == -1) {
               throw SysError("cannot dup output pipe to stdout");
             }
 
