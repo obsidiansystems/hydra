@@ -49,6 +49,7 @@ while ($note = <STDIN>) {
           }
       }
       $dbh->do("update Builds set notificationPendingSince = null where id = '$buildId';");
+      printf "OK\n"
   }
 
   elsif ($cmd eq "build-queued") {
@@ -58,6 +59,7 @@ while ($note = <STDIN>) {
               print STDERR "$plugin->buildQueued: $@\n";
           }
       }
+      printf "OK\n"
   }
 
   elsif ($cmd eq "build-started") {
@@ -67,6 +69,7 @@ while ($note = <STDIN>) {
               print STDERR "$plugin->buildStarted: $@\n";
           }
       }
+      printf "OK\n"
   }
 
   elsif ($cmd eq "step-finished") {
@@ -84,6 +87,7 @@ while ($note = <STDIN>) {
               print STDERR "$plugin->stepFinished: $@\n";
           }
       }
+      printf "OK\n"
   }
 
   else {
