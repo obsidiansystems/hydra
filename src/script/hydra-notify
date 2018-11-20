@@ -5,8 +5,10 @@ use utf8;
 use Hydra::Plugin;
 use Hydra::Helper::Nix;
 use Hydra::Helper::AddBuilds;
+use IO::Handle;
 
 STDERR->autoflush(1);
+STDOUT->autoflush(1);
 binmode STDERR, ":encoding(utf8)";
 
 my $config = getHydraConfig();
@@ -19,7 +21,10 @@ my $note;
 
 foreach $note ( <STDIN> ) {
   my @args = split(/ /,$note);
+  print "Args: @args\n";
   my $cmd = shift @args or die "Syntax: hydra-notify build-started BUILD | build-finished BUILD-ID [BUILD-IDs...] | step-finished BUILD-ID STEP-NR LOG-PATH\n";
+  print "Parsed cmd: $cmd\n";
+  $fh->flush();
   my $buildId = shift @args or die "BUILD not supplied";
   my $build = $db->resultset('Builds')->find($buildId)
       or die "build $buildId does not exist\n";
@@ -31,7 +36,7 @@ foreach $note ( <STDIN> ) {
           handleDeclarativeJobsetBuild($db, $project, $build);
       }
       my @dependents;
-      foreach my $id (@ARGV) {
+      foreach my $id (@args) {
           my $dep = $db->resultset('Builds')->find($id)
               or die "build $id does not exist\n";
           push @dependents, $dep;
@@ -64,11 +69,13 @@ foreach $note ( <STDIN> ) {
   }
 
   elsif ($cmd eq "step-finished") {
-      die if scalar @ARGV < 2;
-      my $stepNr = shift @ARGV;
+      die if scalar @args < 2;
+      print "Args for step-finished: @args\n";
+      $fh->flush();
+      my $stepNr = shift @args;
       my $step = $build->buildsteps->find({stepnr => $stepNr})
           or die "step $stepNr does not exist\n";
-      my $logPath = shift @ARGV;
+      my $logPath = shift @args;
       $logPath = undef if $logPath eq "";
 
       foreach my $plugin (@plugins) {
