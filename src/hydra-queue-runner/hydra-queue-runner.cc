@@ -1,5 +1,6 @@
 #include <iostream>
 #include <thread>
+#include <stdio.h>
 
 #include <string>
 #include <sys/types.h>
@@ -36,6 +37,9 @@ typedef struct {
   pid_t pid;
   nix::Pipe to_notify;
   nix::Pipe from_notify;
+  FILE* to_notify_stream;
+  FILE* from_notify_stream;
+  char* buf_notify;
 } hydra_notify_state;
 
 static uint64_t getMemSize()
@@ -469,9 +473,8 @@ void State::notificationSender()
       bool should_fork = false;
 
       if(hydra_notify) {
-        int status;
         int result;
-        result = waitpid(hydra_notify->pid, &status, WNOHANG);
+        result = waitpid(hydra_notify->pid, NULL, WNOHANG);
         if (result == 0) {
           should_fork = false;
         } else if (result == -1) {
@@ -484,11 +487,17 @@ void State::notificationSender()
       }
 
       if (should_fork) {
+        if(hydra_notify) {
+          fclose(hydra_notify->to_notify_stream);
+          fclose(hydra_notify->from_notify_stream);
+        }
         Pipe to, from;
         pid_t new_pid;
 
         to.create();
         from.create();
+        FILE* toNotify = fdopen(dup(hydra_notify->to_notify.writeSide.get()), "w");
+        FILE* fromNotify = fdopen(dup(hydra_notify->from_notify.readSide.get()), "r");
 
         new_pid = startProcess([&]() {
 
@@ -507,7 +516,10 @@ void State::notificationSender()
         hydra_notify = std::optional<hydra_notify_state> {{
           .pid = new_pid,
           .to_notify = std::move(to),
-          .from_notify = std::move(from)
+          .from_notify = std::move(from),
+          .to_notify_stream = toNotify,
+          .from_notify_stream = fromNotify,
+          .buf_notify = NULL
         }};
       }
 
@@ -541,10 +553,13 @@ void State::notificationSender()
           break;
       }
 
-      FILE* toNotify = fdopen(hydra_notify->to_notify.writeSide.get(), "w");
+      fprintf(hydra_notify->to_notify_stream, "%s\n", payload.c_str());
+      fflush(hydra_notify->to_notify_stream);
 
-      fprintf(toNotify, "%s\n", payload.c_str());
-      fflush(toNotify);
+      int res = getline(&(hydra_notify->buf_notify), NULL, hydra_notify->from_notify_stream);
+      if (res == -1) {
+        throw Error("notification about build %d failed.", item.id);
+      }
 
       auto now2 = std::chrono::steady_clock::now();
 
