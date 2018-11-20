@@ -497,7 +497,7 @@ void State::notificationSender()
               throw SysError("cannot dup output pipe to stdout");
             }
 
-            execlp("/var/lib/hydra/hydra-notify", "hydra-notify", NULL);
+            execlp("hydra-notify", "hydra-notify", NULL);
 
             throw SysError("cannot start hydra-notify");
         });
