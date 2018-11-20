@@ -548,7 +548,7 @@ void State::notificationSender()
           txn.commit();
       }
 
-      nrNotificationTimeMs += std::chrono::duration_cast<std::chrono::milliseconds>(now2 - now1).count();
+      nrNotificationTimeUs += std::chrono::duration_cast<std::chrono::microseconds>(now2 - now1).count();
       nrNotificationsDone++;
 
   } catch (std::exception & e) {
@@ -632,9 +632,9 @@ void State::dumpStatus(Connection & conn, bool log)
         root.attr("nrNotificationsFailed", nrNotificationsFailed);
         root.attr("nrNotificationsInProgress", nrNotificationsInProgress);
         root.attr("nrNotificationsPending", notificationSenderQueue.lock()->size());
-        root.attr("nrNotificationTimeMs", nrNotificationTimeMs);
+        root.attr("nrNotificationTimeUs", nrNotificationTimeUs);
         uint64_t nrNotificationsTotal = nrNotificationsDone + nrNotificationsFailed;
-        root.attr("nrNotificationTimeAvgMs", nrNotificationsTotal == 0 ? 0.0 : (float) nrNotificationTimeMs / nrNotificationsTotal);
+        root.attr("nrNotificationTimeAvgUs", nrNotificationsTotal == 0 ? 0.0 : (float) nrNotificationTimeUs / nrNotificationsTotal);
 
         {
             auto nested = root.object("machines");
