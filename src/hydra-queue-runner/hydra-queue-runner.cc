@@ -32,6 +32,11 @@ template<> void toJSON<double>(std::ostream & str, const double & n) { str << n;
 
 }
 
+typedef struct {
+  pid_t pid;
+  nix::Pipe to_notify;
+  nix::Pipe from_notify;
+} hydra_notify_state;
 
 static uint64_t getMemSize()
 {
@@ -56,7 +61,6 @@ State::State()
     , maxLogSize(config->getIntOption("max_log_size", 64ULL << 20))
     , uploadLogsToBinaryCache(config->getBoolOption("upload_logs_to_binary_cache", false))
     , rootsDir(config->getStrOption("gc_roots_dir", fmt("%s/gcroots/per-user/%s/hydra-roots", settings.nixStateDir, getEnvOrDie("LOGNAME"))))
-    , hydra_notify(std::nullopt)
 {
     debug("using %d bytes for the NAR buffer", memoryTokens.capacity());
 
@@ -458,6 +462,7 @@ bool State::checkCachedFailure(Step::ptr step, Connection & conn)
 void State::notificationSender()
 {
   using namespace std::string_literals;
+  std::optional<hydra_notify_state> hydra_notify = std::nullopt;
 
   while (true) {
     try {
