@@ -488,6 +488,7 @@ void State::notificationSender()
       }
 
       if (should_fork) {
+        printMsg(lvlInfo, "Entered should_fork");
         if(hydra_notify) {
           fclose(hydra_notify->to_notify_stream);
           fclose(hydra_notify->from_notify_stream);
