@@ -516,6 +516,9 @@ void State::notificationSender()
             throw SysError("cannot start hydra-notify");
         });
 
+        close(to.readSide.release());
+        close(from.writeSide.release());
+
         hydra_notify = std::optional<hydra_notify_state> {{
           .pid = new_pid,
           .to_notify = std::move(to),
