@@ -565,6 +565,16 @@ void State::notificationSender()
 
       auto now2 = std::chrono::steady_clock::now();
 
+      if (item.type == NotificationItem::Type::BuildFinished) {
+          auto conn(dbPool.get());
+          pqxx::work txn(*conn);
+          txn.parameterized
+              ("update Builds set notificationPendingSince = null where id = $1")
+              (item.id)
+              .exec();
+          txn.commit();
+      }
+
       nrNotificationTimeUs += std::chrono::duration_cast<std::chrono::microseconds>(now2 - now1).count();
       nrNotificationsDone++;
 
