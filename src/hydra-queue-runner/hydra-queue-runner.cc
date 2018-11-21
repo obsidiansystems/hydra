@@ -496,8 +496,9 @@ void State::notificationSender()
 
         to.create();
         from.create();
-        FILE* toNotify = fdopen(dup(hydra_notify->to_notify.writeSide.get()), "w");
-        FILE* fromNotify = fdopen(dup(hydra_notify->from_notify.readSide.get()), "r");
+
+        FILE* toNotify = fdopen(dup(to.writeSide.get()), "w");
+        FILE* fromNotify = fdopen(dup(from.readSide.get()), "r");
 
         new_pid = startProcess([&]() {
 
@@ -556,9 +557,10 @@ void State::notificationSender()
       fprintf(hydra_notify->to_notify_stream, "%s\n", payload.c_str());
       fflush(hydra_notify->to_notify_stream);
 
-      int res = getline(&(hydra_notify->buf_notify), NULL, hydra_notify->from_notify_stream);
+      size_t n = 0;
+      int res = getline(&(hydra_notify->buf_notify), &n, hydra_notify->from_notify_stream);
       if (res == -1) {
-        throw Error("notification about build %d failed.", item.id);
+        throw Error("notification about build %d failed: %s", item.id, strerror(errno));
       }
 
       auto now2 = std::chrono::steady_clock::now();
