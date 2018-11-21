@@ -474,7 +474,8 @@ void State::notificationSender()
 
       if(hydra_notify) {
         int result;
-        result = waitpid(hydra_notify->pid, NULL, WNOHANG);
+        int status;
+        result = waitpid(hydra_notify->pid, &status, WNOHANG);
         if (result == 0) {
           should_fork = false;
         } else if (result == -1) {
