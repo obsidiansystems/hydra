@@ -568,8 +568,6 @@ void State::notificationSender()
         throw Error("notification about build %d failed: %s", item.id, strerror(errno));
       }
 
-      auto now2 = std::chrono::steady_clock::now();
-
       if (item.type == NotificationItem::Type::BuildFinished) {
           auto conn(dbPool.get());
           pqxx::work txn(*conn);
@@ -579,6 +577,7 @@ void State::notificationSender()
               .exec();
           txn.commit();
       }
+      auto now2 = std::chrono::steady_clock::now();
 
       nrNotificationTimeUs += std::chrono::duration_cast<std::chrono::microseconds>(now2 - now1).count();
       nrNotificationsDone++;
@@ -586,7 +585,7 @@ void State::notificationSender()
   } catch (std::exception & e) {
       nrNotificationsFailed++;
       printMsg(lvlError, format("notification sender: %1%") % e.what());
-      sleep(5);
+      sleep(1);
     }
   }
 }
