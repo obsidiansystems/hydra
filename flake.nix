@@ -10,7 +10,7 @@
   };
 
   inputs.nix-eval-jobs = {
-    url = "github:NixOS/nix-eval-jobs/v2.34.1";
+    url = "github:amaanq/nix-eval-jobs/2.34-change-ci-fixes";
     # We want to control the deps precisely
     flake = false;
   };

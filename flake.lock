@@ -20,16 +20,16 @@
     "nix-eval-jobs": {
       "flake": false,
       "locked": {
-        "lastModified": 1773356729,
-        "narHash": "sha256-OFGRoJOYhvZ3Enk5a8vMy0QNcG5ZxyzFhyHMrwKXde8=",
-        "owner": "NixOS",
+        "lastModified": 1773307729,
+        "narHash": "sha256-4YJe4iJpWKzwuq9f6bBbngJUij9Lf8ZSix82lfVQ3o8=",
+        "owner": "amaanq",
         "repo": "nix-eval-jobs",
-        "rev": "65ebf5b7cd453a27af09cf02b1fc57b3568cc4b7",
+        "rev": "3acecc655d9b82801fcf2fa0a94ab02c198154ad",
         "type": "github"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "v2.34.1",
+        "owner": "amaanq",
+        "ref": "2.34-change-ci-fixes",
         "repo": "nix-eval-jobs",
         "type": "github"
       }
