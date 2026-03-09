@@ -19,20 +19,13 @@ get_random_port() {
 }
 
 cleanup() {
-    echo "Cleaning up processes..."
-    if [[ -n "${QUEUE_RUNNER_PID:-}" ]]; then
-        kill "${QUEUE_RUNNER_PID}" 2>/dev/null || true
-    fi
-    if [[ -n "${BUILDER_PID:-}" ]]; then
-        kill "${BUILDER_PID}" 2>/dev/null || true
-    fi
+    kill "${QUEUE_RUNNER_PID:-}" "${BUILDER_PID:-}" 2>/dev/null || true
     wait 2>/dev/null || true
-    echo "Cleanup complete"
+    rm -rf "${CONFIG_DIR:-}" 2>/dev/null || true
 }
 
 if [[ $# -eq 0 ]]; then
     echo "Usage: $0 <build_id>"
-    echo "Example: $0 12345"
     exit 1
 fi
 
@@ -43,62 +36,78 @@ trap cleanup EXIT INT TERM
 GRPC_PORT=$(get_random_port 5000 9999)
 HTTP_PORT=$(get_random_port 10000 19999)
 
-echo "Using GRPC port: ${GRPC_PORT}"
-echo "Using HTTP port: ${HTTP_PORT}"
+# Build a postgres:// URL from the Perl DBI string that the test harness sets
+# (e.g. HYDRA_DBI='dbi:Pg:dbname=test;host=127.0.0.1;port=15437').
+build_db_url() {
+    local dbi="${HYDRA_DBI:-}"
+    local dbname port host user
 
-echo "Starting queue-runner..."
-RUST_LOG=queue_runner=debug,info NO_COLOR=1 hydra-queue-runner \
-    --rest-bind "[::]:${HTTP_PORT}" \
-    --grpc-bind "[::]:${GRPC_PORT}" \
-    --config-path <(echo -e "dbUrl= \"${HYDRA_DATABASE_URL}\"\nhydraDataDir=\"${HYDRA_DATA}\"") \
-    --disable-queue-monitor-loop &
-QUEUE_RUNNER_PID=$!
-sleep 0.5
+    dbname=$(echo "$dbi" | sed -n 's/.*dbname=\([^;]*\).*/\1/p')
+    port=$(echo "$dbi" | sed -n 's/.*port=\([^;]*\).*/\1/p')
+    host=$(echo "$dbi" | sed -n 's/.*host=\([^;]*\).*/\1/p')
+    user=$(echo "$dbi" | sed -n 's/.*user=\([^;]*\).*/\1/p')
 
-echo "Starting builder..."
-RUST_LOG=builder=debug,info NO_COLOR=1 hydra-builder --gateway-endpoint "http://[::]:${GRPC_PORT}" &
-BUILDER_PID=$!
-sleep 2
+    : "${dbname:=hydra}"
+    : "${port:=5432}"
+    : "${host:=${PGHOST:-/tmp}}"
+    : "${user:=$(id -un)}"
 
-echo "Waiting for services to start..."
+    # Percent-encode Unix socket dir paths.
+    if [[ "$host" == /* ]]; then
+        host=$(printf '%s' "$host" | sed 's|/|%2F|g')
+    fi
 
-echo "Services started successfully!"
-echo "queue-runner PID: ${QUEUE_RUNNER_PID}"
-echo "builder PID: ${BUILDER_PID}"
-
-# Function to submit build and monitor
-submit_and_monitor_build() {
-    local build_id="$1"
-
-    echo "Submitting build ${build_id}..."
-
-    curl -s --fail -X POST \
-        --json "{\"buildId\": ${build_id}}" \
-        "http://[::1]:${HTTP_PORT}/build_one"
-    echo "Monitoring build ${build_id}..."
-    sleep 2 # wait a couple of seconds till job is dispatched
-
-    while true; do
-        local status_response
-        status_response=$(curl -s "http://[::1]:${HTTP_PORT}/status/build/${build_id}/active")
-        echo "Status response: ${status_response}"
-
-        # Check if build is still active
-        if [[ "${status_response}" == *"false"* ]] || [[ "${status_response}" == *"null"* ]] || [[ "${status_response}" == *"\"active\": false"* ]]; then
-            echo "Build ${build_id} is no longer active"
-            break
-        elif [[ "${status_response}" == *"true"* ]] || [[ "${status_response}" == *"\"active\": true"* ]]; then
-            echo "Build ${build_id} is still active, waiting..."
-            sleep 2
-        else
-            echo "Unexpected status response: ${status_response}"
-            sleep 2
-        fi
-    done
-
-    echo "Build ${build_id} completed!"
+    echo "postgres://${user}@${host}:${port}/${dbname}"
 }
 
-submit_and_monitor_build "${BUILD_ID}"
+CONFIG_DIR=$(mktemp -d)
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
+DB_URL=$(build_db_url)
 
-echo "All done! Services will be cleaned up automatically."
+# Read store settings from the Apache-style HYDRA_CONFIG if present.
+DEST_STORE_URI="" USE_SUBSTITUTES=""
+if [[ -n "${HYDRA_CONFIG:-}" && -f "${HYDRA_CONFIG}" ]]; then
+    DEST_STORE_URI=$(sed -n 's/^\s*store_uri\s*=\s*//p' "${HYDRA_CONFIG}" | head -1 | xargs || true)
+    USE_SUBSTITUTES=$(sed -n 's/^\s*use-substitutes\s*=\s*//p' "${HYDRA_CONFIG}" | head -1 | xargs || true)
+fi
+
+{
+    echo "dbUrl = \"${DB_URL}\""
+    echo "hydraDataDir = \"${CONFIG_DIR}/data\""
+    [[ -n "${DEST_STORE_URI}" ]] && echo "destStoreUri = \"${DEST_STORE_URI}\""
+    [[ "${USE_SUBSTITUTES}" == "1" ]] && echo "useSubstitutes = true"
+} > "${CONFIG_FILE}"
+
+RUST_LOG=queue_runner=debug,info NO_COLOR=1 hydra-queue-runner \
+    --config-path "${CONFIG_FILE}" \
+    --rest-bind "[::]:${HTTP_PORT}" \
+    --grpc-bind "[::]:${GRPC_PORT}" \
+    --disable-queue-monitor-loop &
+QUEUE_RUNNER_PID=$!
+
+# Wait for the REST server to become available before starting the builder.
+for _ in $(seq 1 30); do
+    curl -sf "http://[::1]:${HTTP_PORT}/status" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+
+RUST_LOG=builder=debug,info NO_COLOR=1 hydra-builder --gateway-endpoint "http://[::1]:${GRPC_PORT}" &
+BUILDER_PID=$!
+
+# Wait for the builder to register as a machine.
+for _ in $(seq 1 30); do
+    curl -sf "http://[::1]:${HTTP_PORT}/status/machines" 2>/dev/null | grep -q '"hostname"' && break
+    sleep 0.5
+done
+
+# Submit build and poll until it finishes.
+curl -s --fail -X POST \
+    --json "{\"buildId\": ${BUILD_ID}}" \
+    "http://[::1]:${HTTP_PORT}/build_one"
+sleep 2
+
+while true; do
+    status=$(curl -s "http://[::1]:${HTTP_PORT}/status/build/${BUILD_ID}/active")
+    [[ "${status}" == *"true"* ]] || break
+    sleep 2
+done
