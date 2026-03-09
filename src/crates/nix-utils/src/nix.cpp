@@ -52,18 +52,29 @@ std::unique_ptr<StoreWrapper> init(rust::Str uri) {
   }
 }
 
-rust::String get_nix_prefix() { return nix::settings.nixPrefix; }
+rust::String get_nix_prefix() {
+  init_nix();
+  auto store_dir = nix::openStore()->storeDir;
+  // nixPrefix was the parent of storeDir (e.g. /nix for /nix/store)
+  auto pos = store_dir.rfind('/');
+  return pos != std::string::npos ? store_dir.substr(0, pos) : store_dir;
+}
 rust::String get_store_dir() {
   init_nix();
-  return nix::settings.nixStore;
+  return nix::openStore()->storeDir;
+}
+rust::String get_store_dir_for(const StoreWrapper &wrapper) {
+  return wrapper._store->storeDir;
 }
 rust::String get_build_dir() {
-  return nix::settings.buildDir.get().has_value()
-             ? *nix::settings.buildDir.get()
-             : nix::settings.nixStateDir + "/builds";
+  auto &localSettings = nix::settings.getLocalSettings();
+  auto buildDir = localSettings.buildDir.get();
+  return buildDir.has_value()
+             ? buildDir->string()
+             : (nix::settings.nixStateDir / "builds").string();
 }
-rust::String get_log_dir() { return nix::settings.nixLogDir; }
-rust::String get_state_dir() { return nix::settings.nixStateDir; }
+rust::String get_log_dir() { return nix::settings.getLogFileSettings().nixLogDir.string(); }
+rust::String get_state_dir() { return nix::settings.nixStateDir.string(); }
 rust::String get_nix_version() { return nix::nixVersion; }
 rust::String get_this_system() { return nix::settings.thisSystem.get(); }
 rust::Vec<rust::String> get_extra_platforms() {
@@ -85,25 +96,25 @@ rust::Vec<rust::String> get_system_features() {
   return data;
 }
 rust::Vec<rust::String> get_substituters() {
-  auto strs = nix::settings.substituters.get();
+  auto refs = nix::settings.getWorkerSettings().substituters.get();
   rust::Vec<rust::String> data;
-  data.reserve(strs.size());
-  for (const auto &val : strs) {
-    data.emplace_back(val);
+  data.reserve(refs.size());
+  for (const auto &val : refs) {
+    data.emplace_back(val.render());
   }
   return data;
 }
 
 bool get_use_cgroups() {
 #ifdef __linux__
-  return nix::settings.useCgroups;
+  return nix::settings.getLocalSettings().useCgroups;
 #endif
   return false;
 }
 void set_verbosity(int32_t level) { nix::verbosity = (nix::Verbosity)level; }
 
 rust::String sign_string(rust::Str secret_key, rust::Str msg) {
-  return nix::SecretKey(AS_VIEW(secret_key)).signDetached(AS_VIEW(msg));
+  return nix::SecretKey(AS_VIEW(secret_key)).signDetached(AS_VIEW(msg)).to_string();
 }
 
 bool is_valid_path(const StoreWrapper &wrapper, rust::Str path) {
@@ -121,8 +132,8 @@ InternalPathInfo query_path_info(const StoreWrapper &wrapper, rust::Str path) {
 
   rust::Vec<rust::String> sigs;
   sigs.reserve(info->sigs.size());
-  for (const std::string &sig : info->sigs) {
-    sigs.push_back(sig);
+  for (const auto &sig : info->sigs) {
+    sigs.push_back(sig.to_string());
   }
 
   // TODO(conni2461): Replace "" with option
@@ -333,7 +344,7 @@ rust::String try_resolve_drv(const StoreWrapper &wrapper, rust::Str path) {
     return "";
   }
 
-  auto resolved_path = writeDerivation(*store, *resolved, nix::NoRepair, false);
+  auto resolved_path = store->writeDerivation(*resolved, nix::NoRepair);
   // TODO: return drv not drv path
   return extract_opt_path(*store, resolved_path);
 }
