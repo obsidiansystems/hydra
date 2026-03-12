@@ -186,6 +186,7 @@ stdenv.mkDerivation {
     perl
     unzip
     protobuf
+    curl
     rustPackages.cargo
     rustPackages.clippy
     rustPackages.rustPlatform.cargoSetupHook
