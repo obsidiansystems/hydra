@@ -1037,9 +1037,9 @@ impl State {
         .await?;
 
         // TODO: redo gc roots, we only need to root until we are done with that build
-        // for (_, path) in &output.outputs {
-        //     self.add_root(path);
-        // }
+        for path in output.outputs.values() {
+            self.add_root(path);
+        }
 
         // Copy outputs to the destination store (store_uri) so that
         // hydra-notify plugins (e.g. DeclarativeJobsets) can read them.
@@ -1877,9 +1877,9 @@ impl State {
         let res = self.get_build_output_cached(&build.drv_path).await?;
 
         // TODO: redo gc roots, we only need to root until we are done with that build
-        // for (_, path) in &res.outputs {
-        //     self.add_root(path);
-        // }
+        for path in res.outputs.values() {
+            self.add_root(path);
+        }
 
         {
             let mut db = self.db.get().await?;
@@ -1957,9 +1957,9 @@ impl State {
     }
 
     #[allow(unused)]
-    fn add_root(&self, drv_path: &nix_utils::StorePath) {
+    fn add_root(&self, store_path: &nix_utils::StorePath) {
         let roots_dir = self.config.get_roots_dir();
-        nix_utils::add_root(&self.store, &roots_dir, drv_path);
+        nix_utils::add_root(&self.store, &roots_dir, store_path);
     }
 
     async fn abort_unsupported(&self) {
