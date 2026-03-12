@@ -259,6 +259,9 @@ struct AppConfig {
 
     #[serde(default)]
     forced_substituters: Vec<String>,
+
+    #[serde(default)]
+    dest_store_uri: Option<String>,
 }
 
 /// Prepared configuration of the application
@@ -289,6 +292,7 @@ pub struct PreparedApp {
     pub enable_fod_checker: bool,
     pub use_presigned_uploads: bool,
     pub forced_substituters: Vec<String>,
+    pub dest_store_uri: Option<String>,
 }
 
 impl TryFrom<AppConfig> for PreparedApp {
@@ -377,6 +381,7 @@ impl TryFrom<AppConfig> for PreparedApp {
             enable_fod_checker: val.enable_fod_checker,
             use_presigned_uploads: val.use_presigned_uploads,
             forced_substituters: val.forced_substituters,
+            dest_store_uri: val.dest_store_uri,
         })
     }
 }
@@ -553,6 +558,12 @@ impl App {
     pub fn get_forced_substituters(&self) -> Vec<String> {
         let inner = self.inner.load();
         inner.forced_substituters.clone()
+    }
+
+    #[must_use]
+    pub fn get_dest_store_uri(&self) -> Option<String> {
+        let inner = self.inner.load();
+        inner.dest_store_uri.clone()
     }
 }
 

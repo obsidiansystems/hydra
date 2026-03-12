@@ -54,6 +54,7 @@ enum RealiseStepResult {
 #[allow(missing_debug_implementations)]
 pub struct State {
     pub store: nix_utils::LocalStore,
+    pub dest_store: Option<nix_utils::RemoteStore>,
     pub remote_stores: parking_lot::RwLock<Vec<binary_cache::S3BinaryCacheClient>>,
     pub config: App,
     pub cli: Cli,
@@ -107,8 +108,14 @@ impl State {
             remote_stores.push(binary_cache::S3BinaryCacheClient::new(uri.parse()?).await?);
         }
 
+        let dest_store = config.get_dest_store_uri().map(|uri| {
+            tracing::info!("Opening destination store: {uri}");
+            nix_utils::RemoteStore::init(&uri)
+        });
+
         Ok(Arc::new(Self {
             store,
+            dest_store,
             remote_stores: parking_lot::RwLock::new(remote_stores),
             cli,
             db,
@@ -1033,6 +1040,24 @@ impl State {
         // for (_, path) in &output.outputs {
         //     self.add_root(path);
         // }
+
+        // Copy outputs to the destination store (store_uri) so that
+        // hydra-notify plugins (e.g. DeclarativeJobsets) can read them.
+        if let Some(ref dest_store) = self.dest_store {
+            let outputs_to_copy = output.outputs.values().cloned().collect::<Vec<_>>();
+            if let Err(e) = nix_utils::copy_paths(
+                self.store.as_base_store(),
+                dest_store.as_base_store(),
+                &outputs_to_copy,
+                false,
+                false,
+                false,
+            )
+            .await
+            {
+                tracing::error!("Failed to copy outputs to destination store: {e}");
+            }
+        }
 
         let has_stores = {
             let r = self.remote_stores.read();
