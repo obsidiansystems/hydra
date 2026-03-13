@@ -1045,11 +1045,6 @@ impl State {
         )
         .await?;
 
-        // TODO: redo gc roots, we only need to root until we are done with that build
-        for path in output.outputs.values() {
-            self.add_root(path);
-        }
-
         // Copy outputs to the destination store (store_uri) so that
         // hydra-notify plugins (e.g. DeclarativeJobsets) can read them.
         if let Some(ref dest_store) = self.dest_store {
@@ -1884,11 +1879,6 @@ impl State {
     #[tracing::instrument(skip(self, build), fields(build_id=build.id), err)]
     async fn handle_cached_build(&self, build: Arc<Build>) -> anyhow::Result<()> {
         let res = self.get_build_output_cached(&build.drv_path).await?;
-
-        // TODO: redo gc roots, we only need to root until we are done with that build
-        for path in res.outputs.values() {
-            self.add_root(path);
-        }
 
         {
             let mut db = self.db.get().await?;
