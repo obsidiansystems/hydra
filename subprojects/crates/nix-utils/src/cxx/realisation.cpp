@@ -14,10 +14,6 @@ rust::String InternalRealisation::as_json() const {
   return nlohmann::json(*_realisation).dump();
 }
 
-rust::String InternalRealisation::get_drv_output_str() const {
-  return _realisation->id.to_string();
-}
-
 std::shared_ptr<InternalRealisation>
 query_raw_realisation(const nix_utils::StoreWrapper &wrapper,
                       rust::Str output_id) {

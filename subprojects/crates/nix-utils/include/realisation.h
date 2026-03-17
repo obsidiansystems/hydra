@@ -12,7 +12,6 @@ public:
   InternalRealisation(nix::ref<nix::Realisation> _realisation);
 
   rust::String as_json() const;
-  rust::String get_drv_output_str() const;
 
 private:
   nix::ref<nix::Realisation> _realisation;
