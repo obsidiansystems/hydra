@@ -12,6 +12,7 @@
 )]
 #![allow(clippy::missing_errors_doc)]
 
+pub mod daemon_store;
 mod drv;
 mod realisation;
 mod realise;

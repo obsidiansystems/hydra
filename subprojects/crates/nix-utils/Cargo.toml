@@ -23,6 +23,8 @@ smallvec.workspace = true
 
 cxx.workspace = true
 harmonia-store-core.workspace = true
+harmonia-store-remote.workspace = true
+harmonia-protocol.workspace = true
 harmonia-utils-hash.workspace = true
 
 nix-diff.workspace = true
