@@ -412,7 +412,7 @@ pub trait BaseStore {
         flip_direction: bool,
         include_outputs: bool,
         include_derivers: bool,
-    ) -> Result<Vec<String>, cxx::Exception>;
+    ) -> Result<Vec<String>, Error>;
 
     #[allow(clippy::fn_params_excessive_bools)]
     fn compute_fs_closures(
@@ -430,7 +430,7 @@ pub trait BaseStore {
         include_outputs: bool,
     ) -> impl Future<Output = Result<Vec<StorePath>, Error>>;
 
-    fn get_store_stats(&self) -> Result<StoreStats, cxx::Exception>;
+    fn get_store_stats(&self) -> Result<StoreStats, Error>;
 
     /// Import paths from nar
     fn import_paths<S>(
@@ -445,17 +445,17 @@ pub trait BaseStore {
             + 'static;
 
     /// Import paths from nar
-    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), cxx::Exception>
+    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), Error>
     where
         Fd: std::os::fd::AsFd + std::os::fd::AsRawFd;
 
     /// Export a store path in NAR format. The data is passed in chunks to callback
-    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), cxx::Exception>
+    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool;
 
     /// Export a store path in NAR format. The data is passed in chunks to callback
-    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), cxx::Exception>
+    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool;
 
@@ -614,14 +614,14 @@ impl BaseStore for BaseStoreImpl {
         flip_direction: bool,
         include_outputs: bool,
         include_derivers: bool,
-    ) -> Result<Vec<String>, cxx::Exception> {
-        ffi::compute_fs_closure(
+    ) -> Result<Vec<String>, Error> {
+        Ok(ffi::compute_fs_closure(
             self.wrapper.as_raw(),
             path,
             flip_direction,
             include_outputs,
             include_derivers,
-        )
+        )?)
     }
 
     #[inline]
@@ -669,8 +669,8 @@ impl BaseStore for BaseStoreImpl {
         Ok(out)
     }
 
-    fn get_store_stats(&self) -> Result<StoreStats, cxx::Exception> {
-        ffi::get_store_stats(self.wrapper.as_raw())
+    fn get_store_stats(&self) -> Result<StoreStats, Error> {
+        Ok(ffi::get_store_stats(self.wrapper.as_raw())?)
     }
 
     #[inline]
@@ -701,16 +701,16 @@ impl BaseStore for BaseStoreImpl {
 
     #[inline]
     #[tracing::instrument(skip(self, fd), err)]
-    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), cxx::Exception>
+    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), Error>
     where
         Fd: std::os::fd::AsFd + std::os::fd::AsRawFd,
     {
-        ffi::import_paths_with_fd(self.wrapper.as_raw(), check_sigs, fd.as_raw_fd())
+        Ok(ffi::import_paths_with_fd(self.wrapper.as_raw(), check_sigs, fd.as_raw_fd())?)
     }
 
     #[inline]
     #[tracing::instrument(skip(self, paths, callback), err)]
-    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), cxx::Exception>
+    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
@@ -719,27 +719,27 @@ impl BaseStore for BaseStoreImpl {
             .map(|v| self.print_store_path(v))
             .collect::<Vec<_>>();
         let slice = paths.iter().map(String::as_str).collect::<Vec<_>>();
-        ffi::export_paths(
+        Ok(ffi::export_paths(
             self.wrapper.as_raw(),
             &slice,
             export_paths_trampoline::<F>,
             std::ptr::addr_of!(callback).cast::<std::ffi::c_void>() as usize,
-        )
+        )?)
     }
 
     #[inline]
     #[tracing::instrument(skip(self, path, callback), err)]
-    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), cxx::Exception>
+    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
         let path = self.print_store_path(path);
-        ffi::nar_from_path(
+        Ok(ffi::nar_from_path(
             self.wrapper.as_raw(),
             &path,
             export_paths_trampoline::<F>,
             std::ptr::addr_of!(callback).cast::<std::ffi::c_void>() as usize,
-        )
+        )?)
     }
 
     #[inline]
@@ -915,7 +915,7 @@ impl BaseStore for LocalStore {
         flip_direction: bool,
         include_outputs: bool,
         include_derivers: bool,
-    ) -> Result<Vec<String>, cxx::Exception> {
+    ) -> Result<Vec<String>, Error> {
         self.base
             .compute_fs_closure(path, flip_direction, include_outputs, include_derivers)
     }
@@ -952,7 +952,7 @@ impl BaseStore for LocalStore {
     }
 
     #[inline]
-    fn get_store_stats(&self) -> Result<StoreStats, cxx::Exception> {
+    fn get_store_stats(&self) -> Result<StoreStats, Error> {
         self.base.get_store_stats()
     }
 
@@ -970,7 +970,7 @@ impl BaseStore for LocalStore {
 
     #[inline]
     #[tracing::instrument(skip(self, fd), err)]
-    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), cxx::Exception>
+    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), Error>
     where
         Fd: std::os::fd::AsFd + std::os::fd::AsRawFd,
     {
@@ -979,7 +979,7 @@ impl BaseStore for LocalStore {
 
     #[inline]
     #[tracing::instrument(skip(self, paths, callback), err)]
-    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), cxx::Exception>
+    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
@@ -988,7 +988,7 @@ impl BaseStore for LocalStore {
 
     #[inline]
     #[tracing::instrument(skip(self, path, callback), err)]
-    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), cxx::Exception>
+    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
@@ -1150,7 +1150,7 @@ impl BaseStore for RemoteStore {
         flip_direction: bool,
         include_outputs: bool,
         include_derivers: bool,
-    ) -> Result<Vec<String>, cxx::Exception> {
+    ) -> Result<Vec<String>, Error> {
         self.base
             .compute_fs_closure(path, flip_direction, include_outputs, include_derivers)
     }
@@ -1187,7 +1187,7 @@ impl BaseStore for RemoteStore {
     }
 
     #[inline]
-    fn get_store_stats(&self) -> Result<StoreStats, cxx::Exception> {
+    fn get_store_stats(&self) -> Result<StoreStats, Error> {
         self.base.get_store_stats()
     }
 
@@ -1205,7 +1205,7 @@ impl BaseStore for RemoteStore {
 
     #[inline]
     #[tracing::instrument(skip(self, fd), err)]
-    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), cxx::Exception>
+    fn import_paths_with_fd<Fd>(&self, fd: Fd, check_sigs: bool) -> Result<(), Error>
     where
         Fd: std::os::fd::AsFd + std::os::fd::AsRawFd,
     {
@@ -1214,7 +1214,7 @@ impl BaseStore for RemoteStore {
 
     #[inline]
     #[tracing::instrument(skip(self, paths, callback), err)]
-    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), cxx::Exception>
+    fn export_paths<F>(&self, paths: &[StorePath], callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
@@ -1223,7 +1223,7 @@ impl BaseStore for RemoteStore {
 
     #[inline]
     #[tracing::instrument(skip(self, path, callback), err)]
-    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), cxx::Exception>
+    fn nar_from_path<F>(&self, path: &StorePath, callback: F) -> Result<(), Error>
     where
         F: FnMut(&[u8]) -> bool,
     {
