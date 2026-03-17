@@ -27,6 +27,8 @@ harmonia-store-remote.workspace = true
 harmonia-protocol.workspace = true
 harmonia-utils-hash.workspace = true
 
+nix-bindings-store.workspace = true
+nix-bindings-util.workspace = true
 nix-diff.workspace = true
 
 [build-dependencies]

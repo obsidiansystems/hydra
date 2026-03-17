@@ -131,19 +131,11 @@ mod ffi {
         fn init_nix();
         fn init(uri: &str) -> UniquePtr<StoreWrapper>;
 
-        fn get_store_dir() -> String;
         fn get_store_dir_for(store: &StoreWrapper) -> String;
         fn get_build_dir() -> String;
         fn get_log_dir() -> String;
         fn get_state_dir() -> String;
-        fn get_nix_version() -> String;
-        fn get_this_system() -> String;
-        fn get_extra_platforms() -> Vec<String>;
-        fn get_system_features() -> Vec<String>;
-        fn get_substituters() -> Vec<String>;
 
-        fn get_use_cgroups() -> bool;
-        fn set_verbosity(level: i32);
         fn is_valid_path(store: &StoreWrapper, path: &str) -> Result<bool>;
         fn query_path_info(store: &StoreWrapper, path: &str) -> Result<InternalPathInfo>;
         fn compute_closure_size(store: &StoreWrapper, path: &str) -> Result<u64>;
@@ -250,10 +242,24 @@ pub fn init_nix() {
     ffi::init_nix();
 }
 
+fn nix_setting(key: &str) -> String {
+    nix_bindings_util::settings::get(key).unwrap_or_default()
+}
+
+fn nix_setting_list(key: &str) -> Vec<String> {
+    nix_setting(key)
+        .split_whitespace()
+        .map(String::from)
+        .collect()
+}
+
+/// Get the store directory. Opens a store to resolve the actual directory.
 #[inline]
 #[must_use]
 pub fn get_store_dir() -> String {
-    ffi::get_store_dir()
+    nix_bindings_store::store::Store::open(None, std::iter::empty::<(&str, &str)>())
+        .and_then(|mut s| s.get_storedir())
+        .unwrap_or_else(|_| "/nix/store".to_owned())
 }
 
 #[inline]
@@ -277,43 +283,42 @@ pub fn get_state_dir() -> String {
 #[inline]
 #[must_use]
 pub fn get_nix_version() -> String {
-    ffi::get_nix_version()
+    nix_setting("version")
 }
 
 #[inline]
 #[must_use]
 pub fn get_this_system() -> String {
-    ffi::get_this_system()
+    nix_setting("system")
 }
 
 #[inline]
 #[must_use]
 pub fn get_extra_platforms() -> Vec<String> {
-    ffi::get_extra_platforms()
+    nix_setting_list("extra-platforms")
 }
 
 #[inline]
 #[must_use]
 pub fn get_system_features() -> Vec<String> {
-    ffi::get_system_features()
+    nix_setting_list("system-features")
 }
 
 #[inline]
 #[must_use]
 pub fn get_substituters() -> Vec<String> {
-    ffi::get_substituters()
+    nix_setting_list("substituters")
 }
 
 #[inline]
 #[must_use]
 pub fn get_use_cgroups() -> bool {
-    ffi::get_use_cgroups()
+    nix_setting("use-cgroups") == "true"
 }
 
 #[inline]
-/// Set the loglevel.
 pub fn set_verbosity(level: i32) {
-    ffi::set_verbosity(level);
+    let _ = nix_bindings_util::settings::set("verbosity", &level.to_string());
 }
 
 pub(crate) async fn asyncify<F, T>(f: F) -> Result<T, Error>

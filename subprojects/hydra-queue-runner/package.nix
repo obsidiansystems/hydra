@@ -37,16 +37,20 @@ rustPlatform.buildRustPackage {
     outputHashes = {
       "nix-diff-0.1.0" = "sha256-heUqcAnGmMogyVXskXc4FMORb8ZaK6vUX+mMOpbfSUw=";
       "harmonia-store-core-0.0.0-alpha.0" = "sha256-g+hdMV9CvUiwsFZWIah5OvBq9UEQk8tKGhNf8UUcE/I=";
+      "nix-bindings-store-0.2.1" = "sha256-8WRgfkfnPV3FeaY9A8TisKCRsOaEso/Z8GE3jivfGsA=";
     };
   };
 
   nativeBuildInputs = [
     pkg-config
     protobuf
+    rustPlatform.bindgenHook
   ];
 
   buildInputs = [
     nixComponents.nix-main
+    nixComponents.nix-store-c
+    nixComponents.nix-util-c
     protobuf
     rust-jemalloc-sys
   ];
