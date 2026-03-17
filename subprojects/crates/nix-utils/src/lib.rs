@@ -140,23 +140,6 @@ mod ffi {
         fn query_path_info(store: &StoreWrapper, path: &str) -> Result<InternalPathInfo>;
         fn compute_closure_size(store: &StoreWrapper, path: &str) -> Result<u64>;
         fn clear_path_info_cache(store: &StoreWrapper) -> Result<()>;
-        #[allow(clippy::fn_params_excessive_bools)]
-        fn compute_fs_closure(
-            store: &StoreWrapper,
-            path: &str,
-            flip_direction: bool,
-            include_outputs: bool,
-            include_derivers: bool,
-        ) -> Result<Vec<String>>;
-        #[allow(clippy::fn_params_excessive_bools)]
-        fn compute_fs_closures(
-            store: &StoreWrapper,
-            paths: &[&str],
-            flip_direction: bool,
-            include_outputs: bool,
-            include_derivers: bool,
-            toposort: bool,
-        ) -> Result<Vec<String>>;
         fn upsert_file(store: &StoreWrapper, path: &str, data: &str, mime_type: &str)
         -> Result<()>;
         fn get_store_stats(store: &StoreWrapper) -> Result<StoreStats>;
@@ -328,6 +311,17 @@ where
 {
     match tokio::task::spawn_blocking(f).await {
         Ok(res) => Ok(res?),
+        Err(_) => Err(std::io::Error::other("background task failed"))?,
+    }
+}
+
+pub(crate) async fn asyncify_anyhow<F, T>(f: F) -> Result<T, Error>
+where
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(res) => res,
         Err(_) => Err(std::io::Error::other("background task failed"))?,
     }
 }
@@ -516,6 +510,11 @@ impl BaseStoreImpl {
     }
 }
 
+/// Open a nix-bindings-store Store (cached internally by nix-bindings-store).
+fn open_nbs_store() -> Result<nix_bindings_store::store::Store, Error> {
+    Ok(nix_bindings_store::store::Store::open(None, std::iter::empty::<(&str, &str)>())?)
+}
+
 fn import_paths_trampoline<F, S, E>(
     data: &mut [u8],
     runtime: usize,
@@ -620,13 +619,10 @@ impl BaseStore for BaseStoreImpl {
         include_outputs: bool,
         include_derivers: bool,
     ) -> Result<Vec<String>, Error> {
-        Ok(ffi::compute_fs_closure(
-            self.wrapper.as_raw(),
-            path,
-            flip_direction,
-            include_outputs,
-            include_derivers,
-        )?)
+        let mut nbs = open_nbs_store()?;
+        let nbs_path = nbs.parse_store_path(path)?;
+        let closure = nbs.get_fs_closure(&nbs_path, flip_direction, include_outputs, include_derivers)?;
+        closure.iter().map(|p| nbs.real_path(p).map_err(Error::from)).collect()
     }
 
     #[inline]
@@ -637,27 +633,28 @@ impl BaseStore for BaseStoreImpl {
         flip_direction: bool,
         include_outputs: bool,
         include_derivers: bool,
-        toposort: bool,
+        _toposort: bool,
     ) -> Result<Vec<StorePath>, Error> {
-        let store = self.wrapper.clone();
-        let paths = paths
+        let paths: Vec<String> = paths
             .iter()
             .map(|v| self.print_store_path(v))
-            .collect::<Vec<_>>();
+            .collect();
 
-        asyncify(move || {
-            let slice = paths.iter().map(String::as_str).collect::<Vec<_>>();
-            Ok(ffi::compute_fs_closures(
-                store.as_raw(),
-                &slice,
-                flip_direction,
-                include_outputs,
-                include_derivers,
-                toposort,
-            )?
-            .into_iter()
-            .map(|v| parse_store_path(&v))
-            .collect())
+        asyncify_anyhow(move || -> Result<Vec<StorePath>, Error> {
+            let mut nbs = open_nbs_store()?;
+            let mut result = Vec::new();
+            for path_str in &paths {
+                let nbs_path = nbs.parse_store_path(path_str).map_err(Error::Anyhow)?;
+                let closure = nbs.get_fs_closure(&nbs_path, flip_direction, include_outputs, include_derivers).map_err(Error::Anyhow)?;
+                for p in closure {
+                    let path_str = nbs.real_path(&p).map_err(Error::Anyhow)?;
+                    let sp = parse_store_path(&path_str);
+                    if !result.contains(&sp) {
+                        result.push(sp);
+                    }
+                }
+            }
+            Ok(result)
         })
         .await
     }
