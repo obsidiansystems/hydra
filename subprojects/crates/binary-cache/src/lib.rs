@@ -47,6 +47,25 @@ pub use crate::presigned::{
 };
 pub use async_compression::Level as CompressionLevel;
 
+/// Sign a harmonia `Realisation` with the given secret keys.
+///
+/// Computes the realisation fingerprint (`realization:{id}:{outPath}`) and
+/// signs it with each key, matching the Nix C++ `Realisation::sign` behavior.
+fn sign_realisation(
+    realisation: &mut nix_utils::Realisation,
+    signing_keys: &[secrecy::SecretString],
+) {
+    if signing_keys.is_empty() {
+        return;
+    }
+    let fingerprint = format!("realization:{}:{}", realisation.id, realisation.out_path);
+    for s in signing_keys {
+        if let Ok(sk) = s.expose_secret().parse::<harmonia_store_core::signature::SecretKey>() {
+            realisation.signatures.insert(sk.sign(fingerprint.as_bytes()));
+        }
+    }
+}
+
 pub async fn path_to_narinfo(
     store: &nix_utils::LocalStore,
     path: &nix_utils::StorePath,
@@ -679,48 +698,16 @@ impl S3BinaryCacheClient {
             return Ok(());
         }
 
-        let mut raw_realisation = store.query_raw_realisation(id)?;
-        if !self.signing_keys.is_empty() {
-            for s in &self.signing_keys {
-                raw_realisation.sign(s.expose_secret())?;
-            }
-        }
+        let raw_realisation = store.query_raw_realisation(id)?;
+        let mut realisation = raw_realisation.as_rust(store.as_base_store())?;
+        sign_realisation(&mut realisation, &self.signing_keys);
 
-        self.upsert_file(
-            &format!("realisations/{id}.doi"),
-            raw_realisation.as_json(),
-            "application/json",
-        )
-        .await?;
+        let json = serde_json::to_string(&realisation)?;
+        self.upsert_file(&format!("realisations/{id}.doi"), json, "application/json")
+            .await?;
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, realisation), err)]
-    pub async fn upload_realisation(
-        &self,
-        mut realisation: nix_utils::FfiRealisation,
-        repair: bool,
-    ) -> Result<(), CacheError> {
-        let id = realisation.get_id();
-        if !repair && self.has_realisation(&id).await? {
-            return Ok(());
-        }
-
-        realisation.clear_signatures();
-        if !self.signing_keys.is_empty() {
-            for s in &self.signing_keys {
-                realisation.sign(s.expose_secret())?;
-            }
-        }
-
-        self.upsert_file(
-            &format!("realisations/{id}.doi"),
-            realisation.as_json(),
-            "application/json",
-        )
-        .await?;
-        Ok(())
-    }
 
     #[tracing::instrument(skip(self), err)]
     pub async fn download_narinfo(
