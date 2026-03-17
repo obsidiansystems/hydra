@@ -136,7 +136,6 @@ mod ffi {
         fn get_log_dir() -> String;
         fn get_state_dir() -> String;
 
-        fn is_valid_path(store: &StoreWrapper, path: &str) -> Result<bool>;
         fn query_path_info(store: &StoreWrapper, path: &str) -> Result<InternalPathInfo>;
         fn compute_closure_size(store: &StoreWrapper, path: &str) -> Result<u64>;
         fn clear_path_info_cache(store: &StoreWrapper) -> Result<()>;
@@ -551,11 +550,14 @@ where
 impl BaseStore for BaseStoreImpl {
     #[inline]
     async fn is_valid_path(&self, path: &StorePath) -> bool {
-        let store = self.wrapper.clone();
         let path = self.print_store_path(path);
-        asyncify(move || ffi::is_valid_path(store.as_raw(), &path))
-            .await
-            .unwrap_or(false)
+        asyncify_anyhow(move || -> Result<bool, Error> {
+            let mut nbs = open_nbs_store()?;
+            let nbs_path = nbs.parse_store_path(&path).map_err(Error::Anyhow)?;
+            Ok(nbs.is_valid_path(&nbs_path))
+        })
+        .await
+        .unwrap_or(false)
     }
 
     #[inline]
