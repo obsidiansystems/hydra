@@ -10,7 +10,7 @@ tracing.workspace = true
 sd-notify.workspace = true
 
 toml.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 secrecy = { workspace = true, features = ["serde"] }
 smallvec = { workspace = true, features = ["serde"] }
