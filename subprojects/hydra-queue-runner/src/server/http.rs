@@ -26,7 +26,7 @@ pub enum Error {
     Anyhow(#[from] anyhow::Error),
 
     #[error("db error: `{0}`")]
-    Sqlx(#[from] db::Error),
+    Db(#[from] db::Error),
 
     #[error("Not found")]
     NotFound,
@@ -45,7 +45,7 @@ impl Error {
             | Self::Hyper(_)
             | Self::Io(_)
             | Self::Anyhow(_)
-            | Self::Sqlx(_)
+            | Self::Db(_)
             | Self::Fatal => hyper::StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotFound => hyper::StatusCode::NOT_FOUND,
         }
