@@ -20,13 +20,11 @@ clap = "4"
 configparser = "3.1"
 cxx = "1"
 cxx-build = "1"
-digest = "0.10.7"
 foldhash = "0.2"
 fs-err = "3.0"
 futures = "0.3"
 futures-util = "0.3"
 gethostname = "1"
-h2 = "0.4"
 hashbrown = "0.16"
 http = "1.1"
 http-body-util = "0.1"
@@ -36,8 +34,6 @@ jiff = { version = "0.2", features = ["serde"] }
 listenfd = "1"
 moka = { version = "0.12", features = ["future"] }
 nix = { version = "0.31", default-features = false }
-data-encoding = "2"
-derive_more = { version = "2", features = ["display", "from", "into", "deref", "from_str"] }
 harmonia-nar = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
 harmonia-protocol = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
 harmonia-protocol-derive = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
@@ -46,16 +42,12 @@ harmonia-store-remote = { git = "https://github.com/obsidiansystems/harmonia.git
 harmonia-utils-base-encoding = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
 harmonia-utils-hash = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
 harmonia-utils-io = { git = "https://github.com/obsidiansystems/harmonia.git", branch = "nix-2.34" }
-md5 = "0.7"
 nix-bindings-store = { git = "https://github.com/amaanq/nix-bindings-rust.git", branch = "hydra-store-ops", features = ["harmonia"] }
 nix-bindings-store-sys = { git = "https://github.com/amaanq/nix-bindings-rust.git", branch = "hydra-store-ops" }
 nix-bindings-util = { git = "https://github.com/amaanq/nix-bindings-rust.git", branch = "hydra-store-ops" }
 nix-bindings-util-sys = { git = "https://github.com/amaanq/nix-bindings-rust.git", branch = "hydra-store-ops" }
 nix-diff = { git = "https://github.com/mic92/nix-diff-rs.git", rev = "7b79a68963fd7fcb48a57071b52bc90bd8d60609" }
-num_enum = "0.7"
-ring = "0.17"
 rustls-pemfile = "2"
-zerocopy = { version = "0.8", features = ["derive"] }
 object_store = "0.13.0"
 opentelemetry = "0.31.0"
 opentelemetry-http = "0.31.0"
@@ -68,7 +60,6 @@ pkg-config = "0.3"
 procfs = "0.17"
 procfs-core = "0.17"
 prometheus = { version = "0.14.0", default-features = false }
-prost = "0.14"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls-webpki-roots", "system-proxy"] }
 sd-notify = "0.5.0"
@@ -87,10 +78,6 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 toml = "1.0"
 tonic = "0.14"
-tonic-health = { version = "0.14", default-features = false }
-tonic-prost = "0.14"
-tonic-prost-build = "0.14"
-tonic-reflection = "0.14"
 tower = "0.5"
 tower-http = "0.6"
 tracing = "0.1"
