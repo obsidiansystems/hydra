@@ -11,7 +11,10 @@ mod step_info;
 mod uploader;
 
 pub use atomic::AtomicDateTime;
-pub use build::{Build, BuildOutput, BuildResultState, BuildTimings, Builds, RemoteBuild};
+pub use build::{
+    Build, BuildOutput, BuildResultState, BuildTimings, Builds, RemoteBuild,
+    step_status_from_protocol,
+};
 pub use jobset::{Jobset, JobsetID, Jobsets};
 pub use machine::{Machine, Message as MachineMessage, Pressure, Stats as MachineStats};
 pub use queue::{BuildQueueStats, Queues};
@@ -81,6 +84,7 @@ pub struct State {
     pub metrics: metrics::PromMetrics,
     pub notify_dispatch: tokio::sync::Notify,
     pub uploader: uploader::Uploader,
+    pub rpc_tunnels: parking_lot::Mutex<HashMap<uuid::Uuid, tokio::sync::mpsc::Receiver<protocol::RunnerMessage>>>,
 }
 
 impl State {
@@ -149,6 +153,7 @@ impl State {
             )
             .await,
             config,
+            rpc_tunnels: parking_lot::Mutex::new(HashMap::new()),
         }))
     }
 

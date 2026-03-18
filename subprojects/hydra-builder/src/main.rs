@@ -13,7 +13,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 mod config;
-mod grpc;
+mod rpc;
 mod metrics;
 mod state;
 mod system;
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let state = state::State::new(&cli).await?;
     let task = tokio::spawn({
         let state = state.clone();
-        async move { grpc::start_bidirectional_stream(state.clone()).await }
+        async move { rpc::start_bidirectional_stream(state.clone()).await }
     });
 
     let _notify = sd_notify::notify(&[

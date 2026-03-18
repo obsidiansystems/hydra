@@ -14,8 +14,8 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod config;
-pub mod grpc;
 pub mod metrics;
+pub mod rpc;
 pub mod state;
 pub mod system;
 pub mod types;

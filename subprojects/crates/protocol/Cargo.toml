@@ -1,0 +1,11 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition = "2024"
+license = "GPL-3.0"
+rust-version.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }

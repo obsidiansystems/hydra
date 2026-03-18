@@ -21,13 +21,19 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 backon.workspace = true
 futures.workspace = true
-prost.workspace = true
-tonic = { workspace = true, features = ["zstd", "tls-webpki-roots"] }
-tonic-prost.workspace = true
+postcard.workspace = true
+serde = { workspace = true, features = ["derive"] }
 url.workspace = true
 tower.workspace = true
-hyper-util.workspace = true
+hyper = { workspace = true, features = ["full"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util.workspace = true
+bytes.workspace = true
 async-stream.workspace = true
+urlencoding.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+webpki-roots.workspace = true
 
 gethostname.workspace = true
 procfs-core.workspace = true
@@ -35,7 +41,8 @@ nix = { workspace = true, features = ["fs"] }
 
 nix-utils = { path = "../crates/nix-utils" }
 shared = { path = "../crates/shared" }
-hydra-tracing = { path = "../crates/tracing", features = ["tonic"] }
+protocol = { path = "../crates/protocol" }
+hydra-tracing = { path = "../crates/tracing" }
 binary-cache = { path = "../crates/binary-cache" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -45,9 +52,6 @@ sysinfo.workspace = true
 tikv-jemallocator.workspace = true
 
 [build-dependencies]
-tonic-prost-build.workspace = true
-sha2.workspace = true
-fs-err = { workspace = true }
 
 [features]
 otel = ["hydra-tracing/otel"]

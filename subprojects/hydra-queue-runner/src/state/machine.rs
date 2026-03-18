@@ -8,7 +8,6 @@ use db::models::BuildID;
 
 use super::{RemoteBuild, System};
 use crate::config::{MachineFreeFn, MachineSortFn};
-use crate::server::grpc::runner_v1::{AbortMessage, BuildMessage, JoinMessage, runner_request};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pressure {
@@ -18,8 +17,8 @@ pub struct Pressure {
     pub total: u64,
 }
 
-impl From<crate::server::grpc::runner_v1::Pressure> for Pressure {
-    fn from(v: crate::server::grpc::runner_v1::Pressure) -> Self {
+impl From<protocol::Pressure> for Pressure {
+    fn from(v: protocol::Pressure) -> Self {
         Self {
             avg10: v.avg10,
             avg60: v.avg60,
@@ -222,7 +221,7 @@ impl Stats {
         self.last_ping.load(Ordering::Relaxed)
     }
 
-    pub fn store_ping(&self, msg: &crate::server::grpc::runner_v1::PingMessage) {
+    pub fn store_ping(&self, msg: &protocol::PingMessage) {
         self.last_ping
             .store(jiff::Timestamp::now().as_second(), Ordering::Relaxed);
 
@@ -519,7 +518,7 @@ pub struct PresignedUrlOpts {
     pub upload_debug_info: bool,
 }
 
-impl From<PresignedUrlOpts> for crate::server::grpc::runner_v1::PresignedUploadOpts {
+impl From<PresignedUrlOpts> for protocol::PresignedUploadOpts {
     fn from(value: PresignedUrlOpts) -> Self {
         Self {
             upload_debug_info: value.upload_debug_info,
@@ -550,13 +549,13 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn into_request(self) -> crate::server::grpc::runner_v1::RunnerRequest {
-        let msg = match self {
-            Self::ConfigUpdate(m) => runner_request::Message::ConfigUpdate(
-                crate::server::grpc::runner_v1::ConfigUpdate {
+    pub fn into_runner_message(self) -> protocol::RunnerMessage {
+        match self {
+            Self::ConfigUpdate(m) => {
+                protocol::RunnerMessage::ConfigUpdate(protocol::ConfigUpdate {
                     max_concurrent_downloads: m.max_concurrent_downloads,
-                },
-            ),
+                })
+            }
             Self::BuildMessage {
                 build_id,
                 drv,
@@ -565,7 +564,7 @@ impl Message {
                 max_silent_time,
                 build_timeout,
                 presigned_url_opts,
-            } => runner_request::Message::Build(BuildMessage {
+            } => protocol::RunnerMessage::Build(protocol::BuildMessage {
                 build_id: build_id.to_string(),
                 drv: drv.to_string(),
                 resolved_drv: resolved_drv.map(|p| p.to_string()),
@@ -574,12 +573,12 @@ impl Message {
                 build_timeout,
                 presigned_url_opts: presigned_url_opts.map(Into::into),
             }),
-            Self::AbortMessage { build_id } => runner_request::Message::Abort(AbortMessage {
-                build_id: build_id.to_string(),
-            }),
-        };
-
-        crate::server::grpc::runner_v1::RunnerRequest { message: Some(msg) }
+            Self::AbortMessage { build_id } => {
+                protocol::RunnerMessage::Abort(protocol::AbortMessage {
+                    build_id: build_id.to_string(),
+                })
+            }
+        }
     }
 }
 
@@ -634,7 +633,7 @@ impl std::fmt::Display for Machine {
 impl Machine {
     #[tracing::instrument(skip(tx), err)]
     pub fn new(
-        msg: JoinMessage,
+        msg: protocol::JoinMessage,
         tx: mpsc::Sender<Message>,
         use_presigned_uploads: bool,
         forced_substituters: &[String],

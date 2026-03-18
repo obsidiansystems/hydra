@@ -6,20 +6,17 @@ use anyhow::Context as _;
 use backon::RetryableWithContext as _;
 use futures::TryFutureExt as _;
 use hashbrown::HashMap;
-use tonic::Request;
 use tracing::Instrument as _;
 
-use crate::grpc::{BuilderClient, runner_v1};
+use crate::rpc::RpcClient;
 use crate::types::BuildTimings;
 use binary_cache::{Compression, PresignedUpload, PresignedUploadClient};
 use nix_utils::BaseStore as _;
-use runner_v1::{
+use protocol::{
     AbortMessage, BuildMessage, BuildMetric, BuildProduct, BuildResultInfo, BuildResultState,
-    FetchRequisitesRequest, JoinMessage, LogChunk, NarData, NixSupport, Output, OutputNameOnly,
-    OutputWithPath, PingMessage, PressureState, StepStatus, StepUpdate, StorePaths, output,
+    FetchRequisitesRequest, JoinMessage, LogChunk, NarData, NixSupport, Output, OutputWithPath,
+    PingMessage, PressureState, StepStatus, StepUpdate,
 };
-
-include!(concat!(env!("OUT_DIR"), "/proto_version.rs"));
 
 const RETRY_MIN_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(3);
 const RETRY_MAX_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(90);
@@ -98,7 +95,7 @@ pub struct State {
     pub max_concurrent_downloads: AtomicU32,
 
     active_builds: parking_lot::RwLock<HashMap<uuid::Uuid, Arc<BuildInfo>>>,
-    pub client: BuilderClient,
+    pub client: RpcClient,
     pub halt: AtomicBool,
     pub metrics: Arc<crate::metrics::Metrics>,
     upload_client: PresignedUploadClient,
@@ -182,7 +179,7 @@ impl State {
                 use_substitutes: cli.use_substitutes,
             },
             max_concurrent_downloads: 5.into(),
-            client: crate::grpc::init_client(cli).await?,
+            client: crate::rpc::init_client(cli).await?,
             halt: false.into(),
             metrics: Arc::new(crate::metrics::Metrics::default()),
             upload_client: PresignedUploadClient::new(),
@@ -300,20 +297,20 @@ impl State {
                                 .unwrap_or_default(),
                             upload_time_ms: u64::try_from(timings.upload_elapsed.as_millis())
                                 .unwrap_or_default(),
-                            result_state: BuildResultState::from(e) as i32,
+                            result_state: BuildResultState::from(e),
                             nix_support: None,
                             outputs: vec![],
                         };
 
-                        if let (_, Err(e)) = (|tuple: (BuilderClient, BuildResultInfo)| async {
-                            let (mut client, body) = tuple;
-                            let res = client.complete_build(body.clone()).await;
+                        if let (_, Err(e)) = (|tuple: (RpcClient, BuildResultInfo)| async {
+                            let (client, body) = tuple;
+                            let res = client.complete_build(&body).await;
                             ((client, body), res)
                         })
                         .retry(retry_strategy())
                         .sleep(tokio::time::sleep)
                         .context((self_.client.clone(), failed_build))
-                        .notify(|err: &tonic::Status, dur: core::time::Duration| {
+                        .notify(|err: &anyhow::Error, dur: core::time::Duration| {
                             tracing::error!("Failed to submit build failure info: err={err}, retrying in={dur:?}");
                         })
                         .await
@@ -402,26 +399,25 @@ impl State {
             .get_gcroot(&gcroot_prefix)
             .map_err(|e| JobFailure::Preparing(e.into()))?;
 
-        let mut client = self.client.clone();
+        let client = self.client.clone();
         let _ = client // we ignore the error here, as this step status has no prio
-            .build_step_update(StepUpdate {
+            .build_step_update(&StepUpdate {
                 build_id: m.build_id.clone(),
                 machine_id: machine_id.to_string(),
-                step_status: StepStatus::SeningInputs as i32,
+                step_status: StepStatus::SendingInputs,
             })
             .await;
         let requisites = client
-            .fetch_drv_requisites(FetchRequisitesRequest {
+            .fetch_drv_requisites(&FetchRequisitesRequest {
                 path: resolved_drv.as_ref().unwrap_or(&drv).to_string().to_owned(),
                 include_outputs: false,
             })
             .await
             .map_err(|e| JobFailure::Import(e.into()))?
-            .into_inner()
             .requisites;
 
         import_requisites(
-            &mut client,
+            &client,
             store.clone(),
             self.metrics.clone(),
             &gcroot,
@@ -443,10 +439,10 @@ impl State {
             .ok_or(JobFailure::Import(anyhow::anyhow!("drv not found")))?;
 
         let _ = client // we ignore the error here, as this step status has no prio
-            .build_step_update(StepUpdate {
+            .build_step_update(&StepUpdate {
                 build_id: m.build_id.clone(),
                 machine_id: machine_id.to_string(),
-                step_status: StepStatus::Building as i32,
+                step_status: StepStatus::Building,
             })
             .await;
         let before_build = Instant::now();
@@ -459,24 +455,32 @@ impl State {
         .await
         .map_err(|e| JobFailure::Build(e.into()))?;
         let drv2 = drv.clone();
-        let log_stream = async_stream::stream! {
-            while let Some(chunk) = log_output.next().await {
-                match chunk {
-                    Ok(chunk) => yield LogChunk {
+        let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+        let log_task = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.build_log_stream(log_rx).await
+            })
+        };
+        while let Some(chunk) = log_output.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    let _ = log_tx.send(LogChunk {
                         drv: drv2.to_string().to_owned(),
                         data: format!("{chunk}\n").into(),
-                    },
-                    Err(e) => {
-                        tracing::error!("Failed to write log chunk to queue-runner: {e}");
-                        break
-                    }
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Failed to write log chunk to queue-runner: {e}");
+                    break;
                 }
             }
-        };
-        client
-            .build_log(Request::new(log_stream))
+        }
+        drop(log_tx);
+        log_task
             .await
-            .map_err(|e| JobFailure::Build(e.into()))?;
+            .map_err(|e| JobFailure::Build(e.into()))?
+            .map_err(|e| JobFailure::Build(e))?;
         let output_paths = drv_info
             .outputs
             .iter()
@@ -497,10 +501,10 @@ impl State {
         tracing::info!("Finished building {drv}");
 
         let _ = client // we ignore the error here, as this step status has no prio
-            .build_step_update(StepUpdate {
+            .build_step_update(&StepUpdate {
                 build_id: m.build_id.clone(),
                 machine_id: machine_id.to_string(),
-                step_status: StepStatus::ReceivingOutputs as i32,
+                step_status: StepStatus::ReceivingOutputs,
             })
             .await;
 
@@ -517,10 +521,10 @@ impl State {
         timings.upload_elapsed = before_upload.elapsed();
 
         let _ = client // we ignore the error here, as this step status has no prio
-            .build_step_update(StepUpdate {
+            .build_step_update(&StepUpdate {
                 build_id: m.build_id.clone(),
                 machine_id: machine_id.to_string(),
-                step_status: StepStatus::PostProcessing as i32,
+                step_status: StepStatus::PostProcessing,
             })
             .await;
         let build_results = Box::pin(new_success_build_result_info(
@@ -536,22 +540,22 @@ impl State {
 
         // This part is stupid, if writing doesnt work, we try to write a failure, maybe that works.
         // We retry to ensure that this almost never happens.
-        (|tuple: (BuilderClient, BuildResultInfo)| async {
-            let (mut client, body) = tuple;
-            let res = client.complete_build(body.clone()).await;
+        (|tuple: (RpcClient, BuildResultInfo)| async {
+            let (client, body) = tuple;
+            let res = client.complete_build(&body).await;
             ((client, body), res)
         })
         .retry(retry_strategy())
         .sleep(tokio::time::sleep)
         .context((client.clone(), build_results))
-        .notify(|err: &tonic::Status, dur: core::time::Duration| {
+        .notify(|err: &anyhow::Error, dur: core::time::Duration| {
             tracing::error!("Failed to submit build success info: err={err}, retrying in={dur:?}");
         })
         .await
         .1
         .map_err(|e| {
             tracing::error!("Failed to submit build success info. Will fail build: err={e}");
-            JobFailure::PostProcessing(e.into())
+            JobFailure::PostProcessing(e)
         })?;
         Ok(())
     }
@@ -599,7 +603,7 @@ impl State {
         nars: Vec<nix_utils::StorePath>,
         build_id: &str,
         machine_id: &str,
-        presigned_url_opts: Option<runner_v1::PresignedUploadOpts>,
+        presigned_url_opts: Option<protocol::PresignedUploadOpts>,
     ) -> anyhow::Result<()> {
         if let Some(opts) = presigned_url_opts {
             upload_nars_presigned(
@@ -644,7 +648,7 @@ async fn substitute_paths(
 
 #[tracing::instrument(skip(client, store, metrics), fields(%gcroot), err)]
 async fn import_paths(
-    mut client: BuilderClient,
+    client: RpcClient,
     store: nix_utils::LocalStore,
     metrics: Arc<crate::metrics::Metrics>,
     gcroot: &Gcroot,
@@ -686,20 +690,14 @@ async fn import_paths(
     };
 
     tracing::debug!("Start importing paths");
-    let stream = client
-        .stream_files(StorePaths {
-            paths: paths.iter().map(|p| p.to_string().to_owned()).collect(),
-        })
-        .await?
-        .into_inner();
+    let rx = client
+        .stream_files(paths.iter().map(|p| p.to_string().to_owned()).collect())
+        .await?;
 
     metrics.add_downloading_path(paths.len() as u64);
     let import_result = store
         .import_paths(
-            tokio_stream::StreamExt::map(stream, |s| {
-                s.map(|v| v.chunk.into())
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, e))
-            }),
+            tokio_stream::wrappers::UnboundedReceiverStream::new(rx),
             false,
         )
         .await;
@@ -716,7 +714,7 @@ async fn import_paths(
 #[tracing::instrument(skip(client, store, metrics, requisites), fields(%gcroot, %drv), err)]
 #[allow(clippy::too_many_arguments)]
 async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
-    client: &mut BuilderClient,
+    client: &RpcClient,
     store: nix_utils::LocalStore,
     metrics: Arc<crate::metrics::Metrics>,
     gcroot: &Gcroot,
@@ -765,13 +763,11 @@ async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
     }
 
     let full_requisites = client
-        .clone()
-        .fetch_drv_requisites(FetchRequisitesRequest {
+        .fetch_drv_requisites(&FetchRequisitesRequest {
             path: drv.to_string().to_owned(),
             include_outputs: true,
         })
         .await?
-        .into_inner()
         .requisites
         .into_iter()
         .map(|s| nix_utils::parse_store_path(&s))
@@ -803,7 +799,7 @@ async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
 
 #[tracing::instrument(skip(client, store, metrics), err)]
 async fn upload_nars_regular(
-    mut client: BuilderClient,
+    client: RpcClient,
     store: nix_utils::LocalStore,
     metrics: Arc<crate::metrics::Metrics>,
     nars: Vec<nix_utils::StorePath>,
@@ -812,14 +808,12 @@ async fn upload_nars_regular(
         use futures::stream::StreamExt as _;
 
         futures::StreamExt::map(tokio_stream::iter(nars), |p| {
-            let mut client = client.clone();
+            let client = client.clone();
             async move {
                 if client
-                    .has_path(runner_v1::StorePath {
-                        path: p.to_string().to_owned(),
-                    })
+                    .has_path(&p.to_string())
                     .await
-                    .is_ok_and(|r| r.into_inner().has_path)
+                    .is_ok_and(|r| r.has_path)
                 {
                     None
                 } else {
@@ -846,9 +840,10 @@ async fn upload_nars_regular(
         let data = Vec::from(data);
         tx.send(NarData { chunk: data }).is_ok()
     };
-    let a = client
-        .build_result(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
-        .map_err(Into::<anyhow::Error>::into);
+    let a = {
+        let client = client.clone();
+        async move { client.build_result_stream(rx).await }
+    };
 
     let b = tokio::task::spawn_blocking(move || {
         async move {
@@ -872,11 +867,11 @@ async fn upload_nars_regular(
 
 #[tracing::instrument(skip(client, store), err)]
 async fn upload_nars_presigned(
-    mut client: BuilderClient,
+    client: RpcClient,
     upload_client: PresignedUploadClient,
     store: nix_utils::LocalStore,
     output_paths: &[nix_utils::StorePath],
-    opts: runner_v1::PresignedUploadOpts,
+    opts: protocol::PresignedUploadOpts,
     build_id: &str,
     machine_id: &str,
 ) -> anyhow::Result<()> {
@@ -944,7 +939,7 @@ async fn upload_nars_presigned(
             build_id,
             machine_id,
             &presigned_response,
-            &mut client,
+            &client,
             &upload_client,
         )
         .await?;
@@ -963,15 +958,12 @@ async fn upload_single_nar_presigned(
     nar_path: &nix_utils::StorePath,
     build_id: &str,
     machine_id: &str,
-    presigned_response: &runner_v1::PresignedNarResponse,
-    client: &mut BuilderClient,
+    presigned_response: &protocol::PresignedNarResponse,
+    client: &RpcClient,
     upload_client: &PresignedUploadClient,
 ) -> anyhow::Result<()> {
     let narinfo = binary_cache::path_to_narinfo(store, nar_path).await?;
-    let nar_upload = presigned_response
-        .nar_upload
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("nar_upload information is missing"))?;
+    let nar_upload = &presigned_response.nar_upload;
 
     let presigned_request = binary_cache::PresignedUploadResponse {
         nar_url: presigned_response.nar_url.clone(),
@@ -1017,7 +1009,7 @@ async fn upload_single_nar_presigned(
         updated_narinfo.file_hash.as_ref(),
         updated_narinfo.file_size,
     ) {
-        let completion_msg = runner_v1::PresignedUploadComplete {
+        let completion_msg = protocol::PresignedUploadComplete {
             build_id: build_id.to_owned(),
             machine_id: machine_id.to_owned(),
             store_path: nar_path.to_string().to_owned(),
@@ -1037,7 +1029,7 @@ async fn upload_single_nar_presigned(
         };
 
         client
-            .notify_presigned_upload_complete(completion_msg)
+            .notify_presigned_upload_complete(&completion_msg)
             .await?;
     }
 
@@ -1067,23 +1059,21 @@ async fn new_success_build_result_info(
 
     let mut build_outputs = vec![];
     for o in drv_info.outputs {
-        build_outputs.push(Output {
-            output: Some(match o.path {
-                Some(p) => {
-                    if let Some(info) = pathinfos.get(&p) {
-                        output::Output::Withpath(OutputWithPath {
-                            name: o.name,
-                            closure_size: store.compute_closure_size(&p).await,
-                            path: p.to_string(),
-                            nar_size: info.nar_size,
-                            nar_hash: info.nar_hash.clone(),
-                        })
-                    } else {
-                        output::Output::Nameonly(OutputNameOnly { name: o.name })
-                    }
+        build_outputs.push(match o.path {
+            Some(p) => {
+                if let Some(info) = pathinfos.get(&p) {
+                    Output::WithPath(OutputWithPath {
+                        name: o.name,
+                        closure_size: store.compute_closure_size(&p).await,
+                        path: p.to_string(),
+                        nar_size: info.nar_size,
+                        nar_hash: info.nar_hash.clone(),
+                    })
+                } else {
+                    Output::NameOnly { name: o.name }
                 }
-                None => output::Output::Nameonly(OutputNameOnly { name: o.name }),
-            }),
+            }
+            None => Output::NameOnly { name: o.name },
         });
     }
 
@@ -1093,7 +1083,7 @@ async fn new_success_build_result_info(
         import_time_ms: u64::try_from(timings.import_elapsed.as_millis())?,
         build_time_ms: u64::try_from(timings.build_elapsed.as_millis())?,
         upload_time_ms: u64::try_from(timings.upload_elapsed.as_millis())?,
-        result_state: BuildResultState::Success as i32,
+        result_state: BuildResultState::Success,
         outputs: build_outputs,
         nix_support: Some(NixSupport {
             metrics: nix_support

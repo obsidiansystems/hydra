@@ -165,19 +165,27 @@ pub enum BuildResultState {
     Cancelled,
 }
 
-impl From<crate::server::grpc::runner_v1::BuildResultState> for BuildResultState {
-    fn from(v: crate::server::grpc::runner_v1::BuildResultState) -> Self {
+pub fn step_status_from_protocol(item: protocol::StepStatus) -> db::models::StepStatus {
+    match item {
+        protocol::StepStatus::Preparing => db::models::StepStatus::Preparing,
+        protocol::StepStatus::Connecting => db::models::StepStatus::Connecting,
+        protocol::StepStatus::SendingInputs => db::models::StepStatus::SendingInputs,
+        protocol::StepStatus::Building => db::models::StepStatus::Building,
+        protocol::StepStatus::WaitingForLocalSlot => db::models::StepStatus::WaitingForLocalSlot,
+        protocol::StepStatus::ReceivingOutputs => db::models::StepStatus::ReceivingOutputs,
+        protocol::StepStatus::PostProcessing => db::models::StepStatus::PostProcessing,
+    }
+}
+
+impl From<protocol::BuildResultState> for BuildResultState {
+    fn from(v: protocol::BuildResultState) -> Self {
         match v {
-            crate::server::grpc::runner_v1::BuildResultState::BuildFailure => Self::BuildFailure,
-            crate::server::grpc::runner_v1::BuildResultState::Success => Self::Success,
-            crate::server::grpc::runner_v1::BuildResultState::PreparingFailure => {
-                Self::PreparingFailure
-            }
-            crate::server::grpc::runner_v1::BuildResultState::ImportFailure => Self::ImportFailure,
-            crate::server::grpc::runner_v1::BuildResultState::UploadFailure => Self::UploadFailure,
-            crate::server::grpc::runner_v1::BuildResultState::PostProcessingFailure => {
-                Self::PostProcessingFailure
-            }
+            protocol::BuildResultState::BuildFailure => Self::BuildFailure,
+            protocol::BuildResultState::Success => Self::Success,
+            protocol::BuildResultState::PreparingFailure => Self::PreparingFailure,
+            protocol::BuildResultState::ImportFailure => Self::ImportFailure,
+            protocol::BuildResultState::UploadFailure => Self::UploadFailure,
+            protocol::BuildResultState::PostProcessingFailure => Self::PostProcessingFailure,
         }
     }
 }
@@ -403,9 +411,9 @@ impl BuildProduct {
         })
     }
 
-    pub fn from_grpc(
+    pub fn from_rpc(
         store_dir: &nix_utils::StoreDir,
-        v: crate::server::grpc::runner_v1::BuildProduct,
+        v: protocol::BuildProduct,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             path: Some(RelativeStorePath::from_path(store_dir, &v.path)?),
@@ -515,25 +523,24 @@ impl TryFrom<db::models::BuildOutput> for BuildOutput {
 }
 
 impl BuildOutput {
-    pub fn from_grpc(
+    pub fn from_rpc(
         store_dir: &nix_utils::StoreDir,
-        v: crate::server::grpc::runner_v1::BuildResultInfo,
+        v: protocol::BuildResultInfo,
     ) -> anyhow::Result<Self> {
         let mut outputs = HashMap::with_capacity(6);
         let mut closure_size = 0;
         let mut nar_size = 0;
 
         for o in v.outputs {
-            match o.output {
-                Some(crate::server::grpc::runner_v1::output::Output::Nameonly(_)) => {
+            match o {
+                protocol::Output::NameOnly { .. } => {
                     // We dont care about outputs that dont have a path,
                 }
-                Some(crate::server::grpc::runner_v1::output::Output::Withpath(o)) => {
+                protocol::Output::WithPath(o) => {
                     outputs.insert(o.name, nix_utils::parse_store_path(&o.path));
                     closure_size += o.closure_size;
                     nar_size += o.nar_size;
                 }
-                None => (),
             }
         }
         let (failed, release_name, products, metrics) = if let Some(nix_support) = v.nix_support {
@@ -555,7 +562,7 @@ impl BuildOutput {
             size: nar_size,
             products: products
                 .into_iter()
-                .map(|p| BuildProduct::from_grpc(store_dir, p))
+                .map(|p| BuildProduct::from_rpc(store_dir, p))
                 .collect::<anyhow::Result<Vec<_>>>()?,
             outputs,
             metrics: metrics

@@ -4,7 +4,6 @@
 , rustPlatform
 
 , nixComponents
-, protobuf
 , pkg-config
 , rust-jemalloc-sys
 }:
@@ -28,7 +27,6 @@ rustPlatform.buildRustPackage {
       ../../subprojects/hydra-builder/build.rs
       ../../subprojects/hydra-builder/src
       ../../subprojects/crates
-      ../../subprojects/proto
     ];
   };
 
@@ -43,7 +41,6 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [
     pkg-config
-    protobuf
     rustPlatform.bindgenHook
   ];
 
@@ -51,7 +48,6 @@ rustPlatform.buildRustPackage {
     nixComponents.nix-main
     nixComponents.nix-store-c
     nixComponents.nix-util-c
-    protobuf
     rust-jemalloc-sys
   ];
 

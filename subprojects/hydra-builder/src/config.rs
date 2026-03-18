@@ -117,11 +117,7 @@ impl Cli {
     #[tracing::instrument(skip(self), err)]
     pub async fn get_mtls(
         &self,
-    ) -> anyhow::Result<(
-        tonic::transport::Certificate,
-        tonic::transport::Identity,
-        String,
-    )> {
+    ) -> anyhow::Result<(String, String, String, String)> {
         let server_root_ca_cert_path = self
             .server_root_ca_cert_path
             .as_deref()
@@ -140,13 +136,10 @@ impl Cli {
             .ok_or_else(|| anyhow::anyhow!("domain_name not provided"))?;
 
         let server_root_ca_cert = fs_err::tokio::read_to_string(server_root_ca_cert_path).await?;
-        let server_root_ca_cert = tonic::transport::Certificate::from_pem(server_root_ca_cert);
-
         let client_cert = fs_err::tokio::read_to_string(client_cert_path).await?;
         let client_key = fs_err::tokio::read_to_string(client_key_path).await?;
-        let client_identity = tonic::transport::Identity::from_pem(client_cert, client_key);
 
-        Ok((server_root_ca_cert, client_identity, domain_name.to_owned()))
+        Ok((server_root_ca_cert, client_cert, client_key, domain_name.to_owned()))
     }
 
     #[tracing::instrument(skip(self), err)]

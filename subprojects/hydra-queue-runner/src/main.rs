@@ -110,20 +110,20 @@ async fn main() -> anyhow::Result<()> {
 
     let task_abort_handles = start_task_loops(&state);
     tracing::info!(
-        "QueueRunner listening on grpc: {:?} and rest: {}",
+        "QueueRunner listening on rpc: {:?} and rest: {}",
         state.cli.grpc_bind,
         state.cli.rest_bind
     );
-    let srv1 = server::grpc::Server::run(state.cli.grpc_bind.clone(), state.clone());
+    let srv1 = server::rpc::Server::run(state.cli.grpc_bind.clone(), state.clone());
     let srv2 = server::http::Server::run(state.cli.rest_bind, state.clone());
 
     let task = tokio::spawn(async move {
         match futures_util::future::join(srv1, srv2).await {
             (Ok(()), Ok(())) => Ok(()),
-            (Ok(()), Err(e)) => Err(anyhow::anyhow!("hyper error while awaiting handle: {e}")),
-            (Err(e), Ok(())) => Err(anyhow::anyhow!("tonic error while awaiting handle: {e}")),
+            (Ok(()), Err(e)) => Err(anyhow::anyhow!("http error while awaiting handle: {e}")),
+            (Err(e), Ok(())) => Err(anyhow::anyhow!("rpc error while awaiting handle: {e}")),
             (Err(e1), Err(e2)) => Err(anyhow::anyhow!(
-                "tonic and hyper error while awaiting handle: {e1} | {e2}"
+                "rpc and http error while awaiting handle: {e1} | {e2}"
             )),
         }
     });

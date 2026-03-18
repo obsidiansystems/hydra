@@ -87,31 +87,6 @@ impl Cli {
                 && self.client_ca_cert_path.is_none())
     }
 
-    #[tracing::instrument(skip(self), err)]
-    pub async fn get_mtls(
-        &self,
-    ) -> anyhow::Result<(tonic::transport::Certificate, tonic::transport::Identity)> {
-        let server_cert_path = self
-            .server_cert_path
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("server_cert_path not provided"))?;
-        let server_key_path = self
-            .server_key_path
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("server_key_path not provided"))?;
-
-        let client_ca_cert_path = self
-            .client_ca_cert_path
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("client_ca_cert_path not provided"))?;
-        let client_ca_cert = fs_err::tokio::read_to_string(client_ca_cert_path).await?;
-        let client_ca_cert = tonic::transport::Certificate::from_pem(client_ca_cert);
-
-        let server_cert = fs_err::tokio::read_to_string(server_cert_path).await?;
-        let server_key = fs_err::tokio::read_to_string(server_key_path).await?;
-        let server_identity = tonic::transport::Identity::from_pem(server_cert, server_key);
-        Ok((client_ca_cert, server_identity))
-    }
 }
 
 fn default_data_dir() -> std::path::PathBuf {
