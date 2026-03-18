@@ -952,15 +952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "encoding_rs"
-version = "0.8.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1572,7 +1563,7 @@ dependencies = [
  "nix",
  "nix-utils",
  "parking_lot",
- "procfs-core 0.18.0",
+ "procfs-core",
  "prost",
  "sd-notify",
  "sha2",
@@ -1617,7 +1608,7 @@ dependencies = [
  "listenfd",
  "nix-utils",
  "parking_lot",
- "procfs 0.18.0",
+ "procfs",
  "prometheus",
  "prost",
  "sd-notify",
@@ -2815,22 +2806,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc5b72d8145275d844d4b5f6d4e1eef00c8cd889edb6035c21675d1bb1f45c9f"
 dependencies = [
  "bitflags",
- "hex",
- "procfs-core 0.17.0",
- "rustix 0.38.44",
-]
-
-[[package]]
-name = "procfs"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25485360a54d6861439d60facef26de713b1e126bf015ec8f98239467a2b82f7"
-dependencies = [
- "bitflags",
  "chrono",
  "flate2",
- "procfs-core 0.18.0",
- "rustix 1.1.4",
+ "hex",
+ "procfs-core",
+ "rustix 0.38.44",
 ]
 
 [[package]]
@@ -2838,16 +2818,6 @@ name = "procfs-core"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "239df02d8349b06fc07398a3a1697b06418223b1c7725085e801e7c0fc6a12ec"
-dependencies = [
- "bitflags",
- "hex",
-]
-
-[[package]]
-name = "procfs-core"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
 dependencies = [
  "bitflags",
  "chrono",
@@ -2866,7 +2836,7 @@ dependencies = [
  "libc",
  "memchr",
  "parking_lot",
- "procfs 0.17.0",
+ "procfs",
  "thiserror",
 ]
 
@@ -3198,7 +3168,6 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
@@ -3211,7 +3180,6 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
- "mime",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
