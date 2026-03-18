@@ -471,7 +471,14 @@ impl RunnerService for Server {
         tokio::spawn({
             async move {
                 if req.result_state() == BuildResultState::Success {
-                    let build_output = crate::state::BuildOutput::from(req);
+                    let build_output =
+                        match crate::state::BuildOutput::from_grpc(state.store.store_dir(), req) {
+                            Ok(output) => output,
+                            Err(e) => {
+                                tracing::error!("Failed to parse build output: {e}");
+                                return;
+                            }
+                        };
                     if let Err(e) = state
                         .succeed_step_by_uuid(build_id, machine_id, build_output)
                         .await
