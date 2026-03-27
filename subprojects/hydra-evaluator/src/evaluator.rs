@@ -259,8 +259,8 @@ impl Evaluator {
 
             jobset.project.clone_from(&row.project);
             jobset.name.clone_from(&row.name);
-            jobset.last_checked_time = row.lastcheckedtime.unwrap_or(0);
-            jobset.trigger_time = row.triggertime;
+            jobset.last_checked_time = row.lastcheckedtime.map_or(0, i64::from);
+            jobset.trigger_time = row.triggertime.map(i64::from);
             jobset.check_interval = row.checkinterval.into();
             jobset.evaluation_style = evaluation_style;
         }
@@ -589,8 +589,8 @@ struct JobsetRow {
     id: i32,
     project: String,
     name: String,
-    lastcheckedtime: Option<i64>,
-    triggertime: Option<i64>,
+    lastcheckedtime: Option<i32>,
+    triggertime: Option<i32>,
     checkinterval: i32,
     jobset_enabled: i32,
 }
