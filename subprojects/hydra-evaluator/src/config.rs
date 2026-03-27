@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use anyhow::{Context as _, bail};
-use sqlx::postgres::PgConnectOptions;
+use anyhow::Context as _;
+use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
 #[derive(Debug)]
 pub(crate) struct HydraConfig {
@@ -92,8 +92,23 @@ fn parse_dbi(dbi: &str) -> anyhow::Result<PgConnectOptions> {
             "user" => opts = opts.username(value.trim()),
             "password" => opts = opts.password(value.trim()),
             "application_name" => opts = opts.application_name(value.trim()),
+            "sslmode" => {
+                let mode = match value.trim() {
+                    "disable" => PgSslMode::Disable,
+                    "allow" => PgSslMode::Allow,
+                    "prefer" => PgSslMode::Prefer,
+                    "require" => PgSslMode::Require,
+                    "verify-ca" => PgSslMode::VerifyCa,
+                    "verify-full" => PgSslMode::VerifyFull,
+                    v => anyhow::bail!("invalid sslmode: {v}"),
+                };
+                opts = opts.ssl_mode(mode);
+            }
+            "sslrootcert" => opts = opts.ssl_root_cert(value.trim()),
+            "sslcert" => opts = opts.ssl_client_cert(value.trim()),
+            "sslkey" => opts = opts.ssl_client_key(value.trim()),
             other => {
-                bail!("unknown DBI parameter: {other}");
+                tracing::warn!("ignoring unsupported DBI parameter: {other}");
             }
         }
     }
