@@ -12,6 +12,7 @@ clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 futures.workspace = true
+fs-err.workspace = true
 sqlx = { workspace = true, features = [
   "runtime-tokio",
   "tls-rustls-ring-webpki",

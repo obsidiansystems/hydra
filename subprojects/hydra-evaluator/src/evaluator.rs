@@ -66,7 +66,8 @@ impl Evaluator {
         config: &HydraConfig,
         eval_one: Option<(String, String)>,
     ) -> Self {
-        let max_evals = config.get_int("max_concurrent_evals", 4).max(1) as usize;
+        let max_evals = usize::try_from(config.get_int("max_concurrent_evals", 4).max(1))
+            .unwrap_or(usize::MAX);
         Self {
             db,
             max_evals,
@@ -170,11 +171,8 @@ impl Evaluator {
             }
         }
 
-        if sleep_secs == i64::MAX {
-            Duration::MAX
-        } else {
-            Duration::from_secs(sleep_secs as u64)
-        }
+        u64::try_from(sleep_secs)
+            .map_or(Duration::MAX, Duration::from_secs)
     }
 
     async fn db_monitor_task(&self) {
@@ -237,10 +235,10 @@ impl Evaluator {
         let mut seen = HashSet::new();
 
         for row in &rows {
-            if let Some((ref proj, ref js)) = self.eval_one {
-                if row.project != *proj || row.name != *js {
-                    continue;
-                }
+            if let Some((ref proj, ref js)) = self.eval_one
+                && (row.project != *proj || row.name != *js)
+            {
+                continue;
             }
 
             seen.insert(row.id);
@@ -443,7 +441,7 @@ impl Evaluator {
         );
 
         sqlx::query("UPDATE Jobsets SET startTime = $1 WHERE id = $2")
-            .bind(now as i32)
+            .bind(now_epoch_i32())
             .bind(jobset_id)
             .execute(self.db.pool())
             .await
@@ -557,7 +555,7 @@ async fn update_db_after_eval(
              errorTime = $2, fetchErrorMsg = null WHERE id = $3",
         )
         .bind(format!("evaluation {status_str}"))
-        .bind(now as i32)
+        .bind(i32::try_from(now).unwrap_or(i32::MAX))
         .bind(jobset_id)
         .execute(&mut *txn)
         .await?;
@@ -570,15 +568,23 @@ async fn update_db_after_eval(
 fn now_epoch() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
+/// Current epoch narrowed to the INT4 width used by Hydra's schema.
+/// Saturates at `i32::MAX` (the schema has a pre-existing Y2038 limit).
+fn now_epoch_i32() -> i32 {
+    i32::try_from(now_epoch()).unwrap_or(i32::MAX)
 }
 
 fn is_broken_connection(e: &anyhow::Error) -> bool {
     for cause in e.chain() {
-        if let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() {
-            if matches!(sqlx_err, sqlx::Error::Io(_) | sqlx::Error::PoolClosed) {
-                return true;
-            }
+        if let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>()
+            && matches!(sqlx_err, sqlx::Error::Io(_) | sqlx::Error::PoolClosed)
+        {
+            return true;
         }
     }
     false

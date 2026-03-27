@@ -1492,6 +1492,7 @@ dependencies = [
  "anyhow",
  "clap",
  "db",
+ "fs-err",
  "futures",
  "hydra-tracing",
  "sqlx",

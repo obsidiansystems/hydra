@@ -17,7 +17,7 @@ impl HydraConfig {
             _ => return Self { options },
         };
 
-        let contents = match std::fs::read_to_string(&path) {
+        let contents = match fs_err::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("could not read HYDRA_CONFIG at {path}: {e}");
