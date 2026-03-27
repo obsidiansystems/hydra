@@ -534,7 +534,7 @@ async fn update_db_after_eval(
     status_str: &str,
     now: i64,
 ) -> anyhow::Result<()> {
-    let pool = db.pool();
+    let mut txn = db.pool().begin().await?;
 
     // Clear trigger time to prevent stuck eval loop
     sqlx::query(
@@ -542,13 +542,13 @@ async fn update_db_after_eval(
          WHERE id = $1 AND startTime IS NOT NULL AND triggerTime <= startTime",
     )
     .bind(jobset_id)
-    .execute(pool)
+    .execute(&mut *txn)
     .await?;
 
     // Clear start time
     sqlx::query("UPDATE Jobsets SET startTime = null WHERE id = $1")
         .bind(jobset_id)
-        .execute(pool)
+        .execute(&mut *txn)
         .await?;
 
     if !exit_ok {
@@ -559,10 +559,11 @@ async fn update_db_after_eval(
         .bind(format!("evaluation {status_str}"))
         .bind(now as i32)
         .bind(jobset_id)
-        .execute(pool)
+        .execute(&mut *txn)
         .await?;
     }
 
+    txn.commit().await?;
     Ok(())
 }
 
