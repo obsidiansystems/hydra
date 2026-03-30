@@ -452,18 +452,17 @@ impl Machines {
                 })
                 .cloned()
         } else {
-            inner.by_system.get(system).and_then(|machines| {
-                machines
-                    .iter()
-                    .find(|m| {
-                        free_fn.is_none_or(|free_fn| m.has_capacity(free_fn))
-                            && m.mandatory_features
+            let machines = inner.by_system.get(system)?;
+            machines
                                 .iter()
-                                .all(|s| required_features.contains(s))
-                            && m.supports_all_features(required_features)
-                    })
-                    .cloned()
-            })
+                                .find(|m| {
+                                    free_fn.is_none_or(|free_fn| m.has_capacity(free_fn))
+                                        && m.mandatory_features
+                                            .iter()
+                                            .all(|s| required_features.contains(s))
+                                        && m.supports_all_features(required_features)
+                                })
+                                .cloned()
         }
     }
 
@@ -850,7 +849,7 @@ impl Machine {
             MachineSortFn::SpeedFactorOnly => self.speed_factor,
             MachineSortFn::CpuCoreCountWithSpeedFactor =>
             {
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(clippy::cast_precision_loss)]
                 (self.speed_factor * (self.cpu_count as f32))
             },
             MachineSortFn::BogomipsWithSpeedFactor => {
@@ -859,7 +858,7 @@ impl Machine {
                 } else {
                     1.0
                 };
-                #[allow(clippy::cast_precision_loss)]
+                #[expect(clippy::cast_precision_loss)]
                 (self.speed_factor * bogomips * (self.cpu_count as f32))
             },
         }

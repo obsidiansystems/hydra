@@ -8,7 +8,7 @@ use opentelemetry::{
 #[cfg(feature = "otel")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub fn accept_trace<B>(request: http::Request<B>) -> http::Request<B> {
+pub const fn accept_trace<B>(request: http::Request<B>) -> http::Request<B> {
     #[cfg(feature = "otel")]
     {
         let parent_context = global::get_text_map_propagator(|propagator| {
@@ -47,8 +47,8 @@ impl Injector for MetadataInjector<'_> {
     }
 }
 
-#[allow(unused_mut)]
-pub fn send_trace<T>(
+#[expect(unused_mut)]
+pub const fn send_trace<T>(
     mut request: tonic::Request<T>,
 ) -> Result<tonic::Request<T>, Box<tonic::Status>> {
     #[cfg(feature = "otel")]

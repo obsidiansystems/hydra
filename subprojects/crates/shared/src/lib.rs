@@ -1,18 +1,3 @@
-#![forbid(unsafe_code)]
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::expect_used,
-    clippy::unwrap_used,
-    future_incompatible,
-    missing_debug_implementations,
-    nonstandard_style,
-    unreachable_pub,
-    missing_copy_implementations,
-    unused_qualifications
-)]
-#![allow(clippy::missing_errors_doc)]
-
 use std::{
     collections::BTreeMap,
     os::unix::fs::MetadataExt as _,
@@ -33,19 +18,19 @@ use tokio::io::{
     BufReader,
 };
 
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 static VALIDATE_METRICS_NAME: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("[a-zA-Z0-9._-]+").expect("Failed to compile regex"));
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 static VALIDATE_METRICS_UNIT: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("[a-zA-Z0-9._%-]+").expect("Failed to compile regex"));
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 static VALIDATE_RELEASE_NAME: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("[a-zA-Z0-9.@:_-]+").expect("Failed to compile regex"));
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 static VALIDATE_PRODUCT_NAME: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("[a-zA-Z0-9.@:_ -]*").expect("Failed to compile regex"));
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 static BUILD_PRODUCT_PARSER: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r#"([a-zA-Z0-9_-]+)\s+([a-zA-Z0-9_-]+)\s+(\"[^\"]+\"|[^\"\s<>]+)(\s+([^\"\s<>]+))?"#,
@@ -141,7 +126,7 @@ impl FsOperations for FilesystemOperations {
         let mut reader = BufReader::new(file);
 
         let mut hasher = Sha256::new();
-        let mut buf = [0u8; 16 * 1024];
+        let mut buf = [0_u8; 16 * 1024];
 
         loop {
             let n = reader.read(&mut buf).await?;
@@ -157,11 +142,7 @@ impl FsOperations for FilesystemOperations {
 
 fn parse_release_name(content: &str) -> Option<String> {
     let content = content.trim();
-    if !content.is_empty() && VALIDATE_RELEASE_NAME.is_match(content) {
-        Some(content.to_owned())
-    } else {
-        None
-    }
+    (!content.is_empty() && VALIDATE_RELEASE_NAME.is_match(content)).then(|| content.to_owned())
 }
 
 fn parse_metric(
@@ -178,11 +159,7 @@ fn parse_metric(
         path:  store.print_store_path(output),
         name:  fields[0].clone(),
         value: fields[1].parse::<f64>().unwrap_or(0.0),
-        unit:  if fields.len() >= 3 && VALIDATE_METRICS_UNIT.is_match(&fields[2]) {
-            Some(fields[2].clone())
-        } else {
-            None
-        },
+        unit:  (fields.len() >= 3 && VALIDATE_METRICS_UNIT.is_match(&fields[2])).then(|| fields[2].clone()),
     })
 }
 
@@ -242,15 +219,11 @@ where
         path,
         default_path: captures
             .get(5)
-            .map(|m| m.as_str().to_string())
+            .map(|m| m.as_str().to_owned())
             .unwrap_or_default(),
         name,
         is_regular: metadata.is_regular,
-        file_size: if metadata.is_regular {
-            Some(metadata.size)
-        } else {
-            None
-        },
+        file_size: metadata.is_regular.then_some(metadata.size),
         sha256hash,
     })
 }
@@ -335,7 +308,7 @@ pub async fn parse_nix_support_from_outputs(
             };
             if metadata.is_dir() {
                 products.push(BuildProduct {
-                    r#type:       "nix-build".to_string(),
+                    r#type:       "nix-build".to_owned(),
                     subtype:      if output_name.as_ref() == "out" {
                         String::new()
                     } else {

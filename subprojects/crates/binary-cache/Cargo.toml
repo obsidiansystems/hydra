@@ -44,3 +44,6 @@ nix-utils                     = { path = "../nix-utils" }
 [dev-dependencies]
 hydra-tracing = { path = "../tracing" }
 tempfile      = "3.23.0"
+
+[lints]
+workspace = true

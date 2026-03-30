@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncReadExt as _;
 use tokio_util::io::StreamReader;
 
 #[tokio::main]

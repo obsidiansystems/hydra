@@ -1,4 +1,4 @@
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BuildTimings {
     pub import_elapsed: std::time::Duration,

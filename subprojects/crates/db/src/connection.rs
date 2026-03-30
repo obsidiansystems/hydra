@@ -1,4 +1,4 @@
-use sqlx::Acquire;
+use sqlx::Acquire as _;
 
 use super::models::{
     Build,
@@ -112,7 +112,7 @@ impl Connection {
         jobset_id: i32,
         scheduling_window: i64,
     ) -> sqlx::Result<Vec<BuildSteps>> {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         sqlx::query_as!(
             BuildSteps,
             r#"
@@ -131,7 +131,7 @@ impl Connection {
 
     #[tracing::instrument(skip(self), err)]
     pub async fn abort_build(&mut self, build_id: i32) -> sqlx::Result<()> {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         sqlx::query!(
             "UPDATE builds SET finished = 1, buildStatus = $2, startTime = $3, stopTime = $3 \
              where id = $1 and finished = 0",
@@ -448,7 +448,7 @@ impl Transaction<'_> {
         build_id: i32,
         status: BuildStatus,
     ) -> sqlx::Result<()> {
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         sqlx::query!(
             r#"
             UPDATE builds SET
@@ -808,7 +808,7 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[tracing::instrument(
         skip(
             self,
@@ -1019,7 +1019,7 @@ impl Transaction<'_> {
     #[tracing::instrument(skip(self), err)]
     async fn notify_any(&mut self, channel: &str, msg: &str) -> sqlx::Result<()> {
         sqlx::query(
-            r"SELECT pg_notify(chan, payload) from (values ($1, $2)) notifies(chan, payload)",
+            "SELECT pg_notify(chan, payload) from (values ($1, $2)) notifies(chan, payload)",
         )
         .bind(channel)
         .bind(msg)

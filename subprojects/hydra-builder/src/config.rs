@@ -156,8 +156,7 @@ impl Cli {
             Ok(Some(
                 fs_err::tokio::read_to_string(path)
                     .await?
-                    .trim()
-                    .to_string(),
+                    .trim().to_owned(),
             ))
         } else {
             Ok(None)

@@ -269,7 +269,7 @@ struct AppConfig {
 /// Prepared configuration of the application
 #[derive(Debug)]
 pub struct PreparedApp {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     hydra_data_dir:               std::path::PathBuf,
     hydra_log_dir:                std::path::PathBuf,
     lockfile:                     std::path::PathBuf,
@@ -330,7 +330,7 @@ impl TryFrom<AppConfig> for PreparedApp {
 
         let token_list = val.token_list_path.and_then(|p| {
             fs_err::read_to_string(p)
-                .map(|s| s.lines().map(|t| t.trim().to_string()).collect())
+                .map(|s| s.lines().map(|t| t.trim().to_owned()).collect())
                 .ok()
         });
 
@@ -367,7 +367,7 @@ impl TryFrom<AppConfig> for PreparedApp {
             use_substitutes: val.use_substitutes,
             roots_dir,
             max_retries: val.max_retries,
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss)]
             retry_interval: val.retry_interval as f32,
             retry_backoff: val.retry_backoff,
             max_unsupported_time: jiff::SignedDuration::from_secs(val.max_unsupported_time_in_s),

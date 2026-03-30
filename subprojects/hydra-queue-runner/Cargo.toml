@@ -67,3 +67,6 @@ tonic-prost-build.workspace = true
 
 [features]
 otel = [ "hydra-tracing/otel" ]
+
+[lints]
+workspace = true

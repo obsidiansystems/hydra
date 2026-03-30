@@ -26,7 +26,7 @@ impl From<crate::state::BuildQueueStats> for BuildQueueStats {
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 pub struct MemoryStats {
     current_bytes:       u64,
     peak_bytes:          u64,
@@ -99,7 +99,7 @@ impl IoStats {
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 pub struct CpuStats {
     usage_usec:  u128,
     user_usec:   u128,

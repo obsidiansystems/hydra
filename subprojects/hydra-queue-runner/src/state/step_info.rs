@@ -158,12 +158,11 @@ impl StepInfo {
                 db_results
                     .into_iter()
                     .map(|path| {
-                        path.and_then(|p| {
-                            let base = p
-                                .strip_prefix(store_dir_str)
-                                .and_then(|s| s.strip_prefix('/'))?;
-                            Some(nix_utils::parse_store_path(base))
-                        })
+                        let p = path?;
+                        let base = p
+                            .strip_prefix(store_dir_str)
+                            .and_then(|s| s.strip_prefix('/'))?;
+                        Some(nix_utils::parse_store_path(base))
                     })
                     .collect()
             })
@@ -217,7 +216,7 @@ impl StepInfo {
     }
 
     pub(super) fn legacy_compare(&self, other: &Self) -> std::cmp::Ordering {
-        #[allow(irrefutable_let_patterns)]
+        #[expect(irrefutable_let_patterns)]
         (if let c1 = self
             .get_highest_global_priority()
             .cmp(&other.get_highest_global_priority())
@@ -243,7 +242,7 @@ impl StepInfo {
     }
 
     pub(super) fn compare_with_rdeps(&self, other: &Self) -> std::cmp::Ordering {
-        #[allow(irrefutable_let_patterns)]
+        #[expect(irrefutable_let_patterns)]
         (if let c1 = self
             .get_highest_global_priority()
             .cmp(&other.get_highest_global_priority())

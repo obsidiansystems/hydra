@@ -119,7 +119,7 @@ pub struct PromMetrics {
 }
 
 impl PromMetrics {
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     #[tracing::instrument(err)]
     pub fn new() -> anyhow::Result<Self> {
         let queue_checks_started = prometheus::IntCounter::with_opts(prometheus::Opts::new(
@@ -1104,8 +1104,8 @@ impl PromMetrics {
     }
 
     fn refresh_transfer_metrics(&self, state: &Arc<super::State>) {
-        let mut total_uploading_path_count = 0u64;
-        let mut total_downloading_path_count = 0u64;
+        let mut total_uploading_path_count = 0_u64;
+        let mut total_downloading_path_count = 0_u64;
 
         for machine in state.machines.get_all_machines() {
             total_uploading_path_count += machine.stats.get_current_uploading_path_count();
@@ -1141,7 +1141,7 @@ impl PromMetrics {
         let now = jiff::Timestamp::now();
 
         self.queue_runner_current_time_seconds.set(now.as_second());
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         self.queue_runner_uptime_seconds.set(
             (now - state.started_at)
                 .total(jiff::Unit::Second)

@@ -143,7 +143,7 @@ impl MachineStats {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Machine {
     systems:                   SmallVec<[crate::state::System; 4]>,
     hostname:                  String,

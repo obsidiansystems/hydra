@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use anyhow::Context;
+use anyhow::Context as _;
 use db::models::{
     BuildID,
     BuildStatus,
@@ -28,7 +28,7 @@ use super::{
     Step,
 };
 
-pub(super) type AtomicBuildID = AtomicI32;
+pub(in super) type AtomicBuildID = AtomicI32;
 
 #[derive(Debug)]
 pub struct Build {
@@ -201,7 +201,7 @@ impl From<crate::server::grpc::runner_v1::BuildResultState> for BuildResultState
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct RemoteBuild {
     pub step_status: BuildStatus,
@@ -245,7 +245,7 @@ impl RemoteBuild {
     }
 
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn get_total_step_time_ms(&self) -> u64 {
         if let (Some(start_time), Some(stop_time)) = (self.start_time, self.stop_time) {
             (stop_time - start_time)
@@ -422,7 +422,7 @@ impl BuildProduct {
             name:                                       v.name,
             is_regular:                                 v.filesize.is_some(),
             sha256hash:                                 v.sha256hash,
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_sign_loss)]
             file_size:                                  v.filesize.map(|v| v as u64),
         })
     }
@@ -527,9 +527,9 @@ impl TryFrom<db::models::BuildOutput> for BuildOutput {
             failed:                                        build_status != BuildStatus::Success,
             timings:                                       BuildTimings::default(),
             release_name:                                  v.releasename,
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_sign_loss)]
             closure_size:                                  v.closuresize.unwrap_or_default() as u64,
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_sign_loss)]
             size:                                          v.size.unwrap_or_default() as u64,
             products:                                      vec![],
             outputs:                                       BTreeMap::new(),
@@ -651,7 +651,7 @@ impl BuildOutput {
     }
 }
 
-pub(super) fn get_mark_build_sccuess_data<'a>(
+pub(in super) fn get_mark_build_sccuess_data<'a>(
     store: &nix_utils::LocalStore,
     b: &'a Arc<Build>,
     res: &'a BuildOutput,

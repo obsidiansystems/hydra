@@ -4,7 +4,7 @@ use std::sync::atomic::{
 };
 
 #[derive(Debug, Default)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 pub struct Metrics {
     pub substituting_path_count: AtomicU64,
 

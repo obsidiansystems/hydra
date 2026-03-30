@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Step {
     drv_path:         nix_utils::StorePath,
     runnable:         bool,

@@ -31,3 +31,6 @@ otel = [
     "tracing-opentelemetry",
 ]
 tonic = [ "dep:tonic", "http" ]
+
+[lints]
+workspace = true

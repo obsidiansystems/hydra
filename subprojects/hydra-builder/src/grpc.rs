@@ -65,7 +65,7 @@ impl BuilderClient {
             .into_iter()
             .map(|(path, nar_hash, build_ids)| {
                 PresignedNarRequest {
-                    store_path: path.to_string().to_owned(),
+                    store_path: path.to_string(),
                     nar_hash,
                     debug_info_build_ids: build_ids,
                 }
@@ -199,7 +199,7 @@ async fn check_version_compatibility(state: Arc<crate::state::State>) -> anyhow:
 
     let response = client
         .check_version(Request::new(VersionCheckRequest {
-            version:    crate::state::PROTO_API_VERSION.to_string(),
+            version:    crate::state::PROTO_API_VERSION.to_owned(),
             machine_id: state.id.to_string(),
             hostname:   state.hostname.clone(),
         }))

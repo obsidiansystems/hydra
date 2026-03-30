@@ -14,3 +14,6 @@ tokio             = { workspace = true, features = [ "full" ] }
 tracing.workspace = true
 
 nix-utils = { path = "../nix-utils" }
+
+[lints]
+workspace = true

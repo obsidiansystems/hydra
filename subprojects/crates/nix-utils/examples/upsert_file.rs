@@ -7,7 +7,7 @@ async fn main() {
     nix_utils::set_verbosity(1);
     let res = store
         .upsert_file(
-            "log/z4zxibgvmk4ikarbbpwjql21wjmdvy85-dbus-1.drv".to_string(),
+            "log/z4zxibgvmk4ikarbbpwjql21wjmdvy85-dbus-1.drv".to_owned(),
             std::path::PathBuf::from(
                 concat!(env!("CARGO_MANIFEST_DIR"), "/examples/upsert_file.rs").to_string(),
             ),

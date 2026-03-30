@@ -6,14 +6,14 @@ use std::{
 use tokio::sync::Notify;
 
 #[derive(Debug)]
-pub(super) struct InspectableChannel<T> {
+pub(in super) struct InspectableChannel<T> {
     queue:  parking_lot::RwLock<VecDeque<T>>,
     notify: Arc<Notify>,
 }
 
 impl<T> InspectableChannel<T> {
     pub(super) fn with_capacity(cap: usize) -> Self {
-        InspectableChannel {
+        Self {
             queue:  parking_lot::RwLock::new(VecDeque::with_capacity(cap)),
             notify: Arc::new(Notify::new()),
         }

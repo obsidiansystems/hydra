@@ -79,7 +79,7 @@ impl BuildQueue {
         sort_fn: StepSortFn,
     ) -> u64 {
         let mut current_jobs = self.jobs.write();
-        let mut wait_time_ms = 0u64;
+        let mut wait_time_ms = 0_u64;
 
         for j in jobs {
             if let Some(owned) = j.upgrade() {
@@ -183,11 +183,11 @@ impl ScheduledItem {
 }
 
 #[derive(Debug)]
-pub(super) struct InnerQueues {
+pub(in super) struct InnerQueues {
     // flat list of all step infos in queues, owning those steps inner queue dont own them
     jobs:      HashMap<nix_utils::StorePath, Arc<StepInfo>>,
     inner:     HashMap<System, Arc<BuildQueue>>,
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     scheduled: parking_lot::RwLock<HashMap<nix_utils::StorePath, ScheduledItem>>,
 }
 
@@ -370,7 +370,7 @@ impl InnerQueues {
     }
 }
 
-pub(super) struct JobConstraint {
+pub(in super) struct JobConstraint {
     job:            Arc<StepInfo>,
     system:         System,
     queue_features: SmallVec<[String; 4]>,
@@ -617,7 +617,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_queues_for_systems() {
         let queues = Queues::new();
-        let systems = vec!["system1".to_string(), "system2".to_string()];
+        let systems = vec!["system1".to_owned(), "system2".to_owned()];
 
         // Ensure queues for systems
         queues.ensure_queues_for_systems(&systems).await;
@@ -645,8 +645,8 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_queues_for_systems_duplicate() {
         let queues = Queues::new();
-        let systems1 = vec!["system1".to_string(), "system2".to_string()];
-        let systems2 = vec!["system2".to_string(), "system3".to_string()];
+        let systems1 = vec!["system1".to_owned(), "system2".to_owned()];
+        let systems2 = vec!["system2".to_owned(), "system3".to_owned()];
 
         // Ensure queues for first set of systems
         queues.ensure_queues_for_systems(&systems1).await;
@@ -665,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn test_insert_machine_creates_queues_integration() {
         // Test the integration concept - what happens when insert_machine is called
-        let systems = vec!["x86_64-linux".to_string(), "aarch64-linux".to_string()];
+        let systems = vec!["x86_64-linux".to_owned(), "aarch64-linux".to_owned()];
         let queues = Queues::new();
 
         // Before: no queues

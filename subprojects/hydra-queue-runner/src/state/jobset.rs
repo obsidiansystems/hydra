@@ -14,7 +14,7 @@ use std::{
 use hashbrown::HashMap;
 
 pub type JobsetID = i32;
-pub(super) const SCHEDULING_WINDOW: i64 = 24 * 60 * 60;
+pub(in super) const SCHEDULING_WINDOW: i64 = 24 * 60 * 60;
 
 #[derive(Debug)]
 pub struct Jobset {
@@ -65,7 +65,7 @@ impl Jobset {
         let shares = self.shares.load(Ordering::Relaxed);
 
         // we dont care about the precision here
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         ((seconds as f64) / f64::from(shares))
     }
 

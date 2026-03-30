@@ -91,13 +91,13 @@ enum RealiseStepResult {
     CachedFailure,
 }
 
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations)]
 pub enum RemoteStoreBackend {
     S3(binary_cache::S3BinaryCacheClient),
     Nix(nix_utils::RemoteStore),
 }
 
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations)]
 pub struct State {
     pub store:         nix_utils::LocalStore,
     pub remote_stores: parking_lot::RwLock<Vec<RemoteStoreBackend>>,
@@ -150,16 +150,13 @@ impl State {
 
         let mut remote_stores = vec![];
         for uri in config.get_remote_store_addrs() {
-            match uri.parse::<binary_cache::S3CacheConfig>() {
-                Ok(cfg) => {
-                    remote_stores.push(RemoteStoreBackend::S3(
-                        binary_cache::S3BinaryCacheClient::new(cfg).await?,
-                    ));
-                },
-                Err(_) => {
-                    tracing::info!("Opening FFI store for: {uri}");
-                    remote_stores.push(RemoteStoreBackend::Nix(nix_utils::RemoteStore::init(&uri)));
-                },
+            if let Ok(cfg) = uri.parse::<binary_cache::S3CacheConfig>() {
+                remote_stores.push(RemoteStoreBackend::S3(
+                    binary_cache::S3BinaryCacheClient::new(cfg).await?,
+                ));
+            } else {
+                tracing::info!("Opening FFI store for: {uri}");
+                remote_stores.push(RemoteStoreBackend::Nix(nix_utils::RemoteStore::init(&uri)));
             }
         }
 
@@ -174,11 +171,7 @@ impl State {
             jobsets: Jobsets::new(),
             steps: Steps::new(),
             queues: Queues::new(),
-            fod_checker: if config.get_enable_fod_checker() {
-                Some(Arc::new(FodChecker::new(None)))
-            } else {
-                None
-            },
+            fod_checker: config.get_enable_fod_checker().then(|| Arc::new(FodChecker::new(None))),
             started_at: jiff::Timestamp::now(),
             metrics: metrics::PromMetrics::new()?,
             notify_dispatch: tokio::sync::Notify::new(),
@@ -207,17 +200,14 @@ impl State {
         let mut new_remote_stores = vec![];
         if curr_remote_stores != new_config.remote_store_addr {
             for uri in &new_config.remote_store_addr {
-                match uri.parse::<binary_cache::S3CacheConfig>() {
-                    Ok(cfg) => {
-                        new_remote_stores.push(RemoteStoreBackend::S3(
-                            binary_cache::S3BinaryCacheClient::new(cfg).await?,
-                        ));
-                    },
-                    Err(_) => {
-                        tracing::info!("Opening FFI store for: {uri}");
-                        new_remote_stores
-                            .push(RemoteStoreBackend::Nix(nix_utils::RemoteStore::init(uri)));
-                    },
+                if let Ok(cfg) = uri.parse::<binary_cache::S3CacheConfig>() {
+                    new_remote_stores.push(RemoteStoreBackend::S3(
+                        binary_cache::S3BinaryCacheClient::new(cfg).await?,
+                    ));
+                } else {
+                    tracing::info!("Opening FFI store for: {uri}");
+                    new_remote_stores
+                        .push(RemoteStoreBackend::Nix(nix_utils::RemoteStore::init(uri)));
                 }
             }
         }
@@ -308,7 +298,7 @@ impl State {
     }
 
     #[tracing::instrument(skip(self, constraint), err)]
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     async fn realise_drv_on_valid_machine(
         self: Arc<Self>,
         constraint: queue::JobConstraint,
@@ -523,7 +513,7 @@ impl State {
             .await;
 
             // we should never run into this issue
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             self.metrics
                 .build_read_time_ms
                 .inc_by(now.elapsed().as_millis() as u64);
@@ -727,7 +717,7 @@ impl State {
                 continue;
             }
 
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             self.metrics
                 .queue_monitor_time_spent_running
                 .inc_by(before_work.elapsed().as_micros() as u64);
@@ -789,7 +779,7 @@ impl State {
                 _ => (),
             }
 
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             self.metrics
                 .queue_monitor_time_spent_waiting
                 .inc_by(before_sleep.elapsed().as_micros() as u64);
@@ -813,7 +803,7 @@ impl State {
                     }
                     tracing::info!("starting dispatch");
 
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation)]
                     self.metrics
                         .dispatcher_time_spent_waiting
                         .inc_by(before_sleep.elapsed().as_micros() as u64);
@@ -824,12 +814,12 @@ impl State {
 
                     let elapsed = before_work.elapsed();
 
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation)]
                     self.metrics
                         .dispatcher_time_spent_running
                         .inc_by(elapsed.as_micros() as u64);
 
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation)]
                     self.metrics
                         .dispatch_time_ms
                         .inc_by(elapsed.as_millis() as u64);
@@ -1091,7 +1081,7 @@ impl State {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     #[tracing::instrument(skip(self, output), fields(%machine_id, %drv_path), err)]
     pub async fn succeed_step(
         &self,
@@ -1192,7 +1182,7 @@ impl State {
                 self.uploader
                     .schedule_upload(
                         outputs_to_upload,
-                        format!("log/{}", job.path.to_string()),
+                        format!("log/{}", job.path),
                         job.result.log_file.clone(),
                     )
                     .await;
@@ -1303,7 +1293,7 @@ impl State {
                 .load(Ordering::Relaxed);
             if tries < max_retries {
                 self.metrics.nr_retries.inc();
-                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                #[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
                 let delta = (retry_interval * retry_backoff.powf((tries - 1) as f32)) as i64;
                 tracing::info!("will retry '{drv_path}' after {delta}s");
                 item.step_info
@@ -1381,7 +1371,7 @@ impl State {
         self.fail_step(machine_id, &drv_path, state, timings).await
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     #[tracing::instrument(skip(self, machine, job, step), fields(%drv_path), err)]
     async fn inner_fail_job(
         &self,
@@ -1589,7 +1579,7 @@ impl State {
                 } else {
                     tx.get_last_build_step_id_for_output_with_drv(
                         &self.store.print_store_path(step.get_drv_path()),
-                        &name.to_string(),
+                        name.as_ref(),
                     )
                     .await
                 };
@@ -1639,7 +1629,7 @@ impl State {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     #[tracing::instrument(skip(
         self,
         build,
@@ -1684,7 +1674,7 @@ impl State {
                             "Failed to get database connection so we can abort the build={} e={}",
                             build.id,
                             e
-                        )
+                        );
                     },
                 }
             }
@@ -1782,7 +1772,7 @@ impl State {
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    #[expect(clippy::too_many_lines, clippy::too_many_arguments)]
     #[tracing::instrument(skip(
         self,
         build,
@@ -1832,7 +1822,7 @@ impl State {
         }
 
         let system_type = std::str::from_utf8(&drv.platform).expect("platform must be valid UTF-8");
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         self.metrics.observe_build_input_drvs(
             harmonia_store_core::derivation::DerivationInputs::from(&drv.inputs)
                 .drvs
@@ -1866,11 +1856,11 @@ impl State {
                 // we have all paths locally, so we can just upload them to the remote_store
                 if let Ok(log_file) = self.construct_log_file_path(&drv_path).await {
                     let missing_paths: Vec<nix_utils::StorePath> =
-                        missing.values().filter_map(|path| path.clone()).collect();
+                        missing.values().filter_map(Clone::clone).collect();
                     self.uploader
                         .schedule_upload(
                             missing_paths,
-                            format!("log/{}", drv_path.to_string()),
+                            format!("log/{drv_path}"),
                             log_file.to_string_lossy().to_string(),
                         )
                         .await;
@@ -2055,7 +2045,7 @@ impl State {
         let output_paths = nix_utils::output_paths(&drv, self.store.store_dir());
         {
             let mut db = self.db.get().await?;
-            for (_, out_path) in &output_paths {
+            for out_path in output_paths.values() {
                 let Some(out_path) = out_path else {
                     continue;
                 };
@@ -2089,7 +2079,7 @@ impl State {
 
         let build_output = BuildOutput::new(&self.store, output_paths).await?;
 
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         self.metrics.observe_build_closure_size(
             build_output.closure_size as f64,
             std::str::from_utf8(&drv.platform).expect("platform must be valid UTF-8"),
@@ -2098,7 +2088,7 @@ impl State {
         Ok(build_output)
     }
 
-    #[allow(unused)]
+    #[expect(unused)]
     fn add_root(&self, store_path: &nix_utils::StorePath) {
         let roots_dir = self.config.get_roots_dir();
         nix_utils::add_root(&self.store, &roots_dir, store_path);

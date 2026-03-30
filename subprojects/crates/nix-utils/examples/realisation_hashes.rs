@@ -10,5 +10,5 @@ async fn main() {
         .await
         .unwrap();
 
-    println!("hashes: {:?}", hashes);
+    println!("hashes: {hashes:?}");
 }

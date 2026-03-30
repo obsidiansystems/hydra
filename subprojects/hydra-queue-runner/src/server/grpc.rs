@@ -63,7 +63,7 @@ pub mod runner_v1 {
 
     tonic::include_proto!("runner.v1");
 
-    pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
+    pub(in crate) const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("streaming_descriptor");
 
     impl From<StepStatus> for db::models::StepStatus {
@@ -145,7 +145,7 @@ impl tonic::service::Interceptor for CheckAuthInterceptor {
     }
 }
 
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations)]
 #[derive(Clone)]
 pub struct Server {
     state: Arc<State>,
@@ -248,7 +248,7 @@ impl RunnerService for Server {
             );
             Ok(tonic::Response::new(VersionCheckResponse {
                 compatible:     true,
-                server_version: server_version.to_string(),
+                server_version: server_version.to_owned(),
             }))
         } else {
             tracing::warn!(
@@ -260,7 +260,7 @@ impl RunnerService for Server {
             );
             Ok(tonic::Response::new(VersionCheckResponse {
                 compatible:     false,
-                server_version: server_version.to_string(),
+                server_version: server_version.to_owned(),
             }))
         }
     }
@@ -682,7 +682,7 @@ impl RunnerService for Server {
                 })?;
 
             responses.push(runner_v1::PresignedNarResponse {
-                store_path:        store_path.to_string().to_owned(),
+                store_path:        store_path.to_string().clone(),
                 nar_url:           presigned_response.nar_url,
                 nar_upload:        Some(runner_v1::PresignedUpload {
                     compression_level: presigned_response.nar_upload.get_compression_level_as_i32(),

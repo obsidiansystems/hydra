@@ -79,7 +79,7 @@ impl StepAtomicState {
 }
 
 #[derive(Debug)]
-pub(super) struct StepState {
+pub(in super) struct StepState {
     deps:    HashSet<Arc<Step>>, // The build steps on which this step depends.
     rdeps:   Vec<Weak<Step>>,    // The build steps that depend on this step.
     builds:  Vec<Weak<Build>>,   // Builds that have this step as the top-level derivation.
@@ -181,7 +181,7 @@ impl Step {
 
     pub fn get_drv(&self) -> Option<arc_swap::Guard<Option<Arc<nix_utils::Derivation>>>> {
         let drv = self.drv.load();
-        if drv.is_some() { Some(drv) } else { None }
+        drv.is_some().then_some(drv)
     }
 
     pub fn set_drv(&self, drv: nix_utils::Derivation) {
@@ -235,7 +235,7 @@ impl Step {
     ) -> Option<BTreeMap<nix_utils::OutputName, Option<nix_utils::StorePath>>> {
         let drv = self.drv.load_full();
         drv.as_ref()
-            .map(|drv| nix_utils::output_paths(&drv, store_dir))
+            .map(|drv| nix_utils::output_paths(drv, store_dir))
     }
 
     // TODO: properly parse derivation options instead of reading env vars directly

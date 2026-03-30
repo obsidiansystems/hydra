@@ -427,7 +427,7 @@ impl State {
     }
 
     #[tracing::instrument(skip(self, m), fields(drv=%m.drv), err)]
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     async fn process_build(
         &self,
         m: BuildMessage,
@@ -463,7 +463,7 @@ impl State {
             .await;
         let requisites = client
             .fetch_drv_requisites(FetchRequisitesRequest {
-                path:            maybe_resolved_drv.to_string().to_owned(),
+                path:            maybe_resolved_drv.to_string().clone(),
                 include_outputs: false,
             })
             .await
@@ -508,7 +508,7 @@ impl State {
             while let Some(chunk) = stderr.next().await {
                 match chunk {
                     Ok(chunk) => yield LogChunk {
-                        drv: drv2.to_string().to_owned(),
+                        drv: drv2.to_string().clone(),
                         data: format!("{chunk}\n").into(),
                     },
                     Err(e) => {
@@ -551,7 +551,7 @@ impl State {
                 "nix built {} derivations, expecting 1",
                 output_raw.len()
             )));
-        };
+        }
 
         let actual_out_drv: nix_utils::StorePath = store
             .store_dir()
@@ -561,7 +561,7 @@ impl State {
             return Err(JobFailure::PostProcessing(anyhow::anyhow!(
                 "Nix returned outputs for {actual_out_drv} when we expected {drv}"
             )));
-        };
+        }
 
         let outputs = output_raw
             .pop()
@@ -575,7 +575,7 @@ impl State {
                 ))
             })
             .collect::<anyhow::Result<BTreeMap<OutputName, nix_utils::StorePath>>>()
-            .map_err(|e| JobFailure::PostProcessing(e))?;
+            .map_err(JobFailure::PostProcessing)?;
 
         for o in outputs.values() {
             nix_utils::add_root(&store, &gcroot.root, o);
@@ -657,7 +657,7 @@ impl State {
             let builds = self.active_builds.read();
             builds
                 .values()
-                .map(|b| b.drv_path.to_string().to_owned())
+                .map(|b| b.drv_path.to_string())
                 .collect::<Vec<_>>()
         };
 
@@ -778,7 +778,7 @@ async fn import_paths(
     tracing::debug!("Start importing paths");
     let stream = client
         .stream_files(StorePaths {
-            paths: paths.iter().map(|p| p.to_string().to_owned()).collect(),
+            paths: paths.iter().map(ToString::to_string).collect(),
         })
         .await?
         .into_inner();
@@ -804,7 +804,7 @@ async fn import_paths(
 }
 
 #[tracing::instrument(skip(client, store, metrics, requisites), fields(%gcroot, %drv), err)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
     client: &mut BuilderClient,
     store: nix_utils::LocalStore,
@@ -826,7 +826,7 @@ async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
     .await;
 
     let (input_drvs, input_srcs): (Vec<_>, Vec<_>) =
-        requisites.into_iter().partition(|p| p.is_derivation());
+        requisites.into_iter().partition(nix_utils::StorePath::is_derivation);
 
     for srcs in input_srcs.chunks(max_concurrent_downloads) {
         import_paths(
@@ -857,7 +857,7 @@ async fn import_requisites<T: IntoIterator<Item = nix_utils::StorePath>>(
     let full_requisites = client
         .clone()
         .fetch_drv_requisites(FetchRequisitesRequest {
-            path:            drv.to_string().to_owned(),
+            path:            drv.to_string().clone(),
             include_outputs: true,
         })
         .await?
@@ -906,7 +906,7 @@ async fn upload_nars_regular(
             async move {
                 if client
                     .has_path(runner_v1::StorePath {
-                        path: p.to_string().to_owned(),
+                        path: p.to_string().clone(),
                     })
                     .await
                     .is_ok_and(|r| r.into_inner().has_path)
@@ -1110,7 +1110,7 @@ async fn upload_single_nar_presigned(
         let completion_msg = runner_v1::PresignedUploadComplete {
             build_id: build_id.to_owned(),
             machine_id: machine_id.to_owned(),
-            store_path: nar_path.to_string().to_owned(),
+            store_path: nar_path.to_string(),
             url: updated_narinfo.url.clone(),
             compression: updated_narinfo.compression.as_str().to_owned(),
             file_hash: format!("{}", file_hash.as_base32()),
@@ -1120,9 +1120,9 @@ async fn upload_single_nar_presigned(
             references: updated_narinfo
                 .references
                 .iter()
-                .map(|p| p.to_string().to_owned())
+                .map(ToString::to_string)
                 .collect(),
-            deriver: updated_narinfo.deriver.map(|p| p.to_string().to_owned()),
+            deriver: updated_narinfo.deriver.map(|p| p.to_string()),
             ca: updated_narinfo.ca,
         };
 
