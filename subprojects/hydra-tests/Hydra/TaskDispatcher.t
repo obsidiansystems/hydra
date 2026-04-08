@@ -3,13 +3,13 @@ use warnings;
 use Setup;
 
 use Hydra::TaskDispatcher;
-use Prometheus::Tiny::Shared;
+use Prometheus::Tiny;
 
 use Test2::V0;
 use Test2::Tools::Mock qw(mock_obj);
 
 my $db = "bogus db";
-my $prometheus  = Prometheus::Tiny::Shared->new;
+my $prometheus  = Prometheus::Tiny->new;
 
 sub make_noop_plugin {
     my ($name) = @_;

@@ -110,7 +110,7 @@ let
         PadWalker
         ParallelForkManager
 
-        PrometheusTinyShared
+        PrometheusTiny
         ReadonlyX
         SetScalar
         SQLSplitStatement
@@ -127,6 +127,10 @@ let
         YAML
         XMLSimple
       ])
+      # Prometheus::Tiny::Shared uses Hash::SharedMem, which is marked
+      # broken on darwin in nixpkgs. hydra-notify falls back to
+      # Prometheus::Tiny there and skips the (forked) metrics exporter.
+      ++ lib.optional stdenv.hostPlatform.isLinux perlPackages.PrometheusTinyShared
     );
   };
 in

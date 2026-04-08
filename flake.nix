@@ -30,17 +30,17 @@
       ...
     }:
     let
-      systems = [
+      linuxSystems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
-      forEachSystem = nixpkgs.lib.genAttrs systems;
       darwinSystems = [
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forEachDarwin = nixpkgs.lib.genAttrs darwinSystems;
-      forEachSystemIncDarwin = nixpkgs.lib.genAttrs (systems ++ darwinSystems);
+      systems = linuxSystems ++ darwinSystems;
+      forEachLinuxSystem = nixpkgs.lib.genAttrs linuxSystems;
+      forEachSystem = nixpkgs.lib.genAttrs systems;
 
       version = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
 
@@ -69,14 +69,6 @@
           hydra-queue-runner = self'.callPackage ./subprojects/hydra-queue-runner/package.nix {
             inherit nixComponents;
           };
-          hydra-builder = self'.callPackage ./subprojects/hydra-builder/package.nix {
-            inherit nixComponents;
-          };
-        });
-      mkHydraBuilder =
-        { pkgs, nixComponents }:
-        pkgs.lib.makeScope pkgs.newScope (self': {
-          inherit version releaseVersion;
           hydra-builder = self'.callPackage ./subprojects/hydra-builder/package.nix {
             inherit nixComponents;
           };
@@ -140,93 +132,63 @@
 
         queueRunner = forEachSystem (system: packages.${system}.hydra-queue-runner);
 
-        builder = forEachSystemIncDarwin (system: packages.${system}.hydra-builder);
+        builder = forEachSystem (system: packages.${system}.hydra-builder);
 
         nixosTests = import ./nixos-tests.nix {
-          inherit forEachSystem nixpkgs nixosModules;
+          forEachSystem = forEachLinuxSystem;
+          inherit nixpkgs nixosModules;
         };
 
         container = nixosConfigurations.container.config.system.build.toplevel;
       };
 
-      checks = forEachSystem (system: {
-        systemTests = hydraJobs.systemTests.${system};
-        install = hydraJobs.nixosTests.install.${system};
-        validate-openapi = hydraJobs.nixosTests.validate-openapi.${system};
-        formatter = (treefmtEval system).config.build.check self;
-      });
+      checks = forEachSystem (
+        system:
+        {
+          systemTests = hydraJobs.systemTests.${system};
+          formatter = (treefmtEval system).config.build.check self;
+        }
+        // nixpkgs.lib.optionalAttrs (!nixpkgs.lib.hasSuffix "-darwin" system) {
+          install = hydraJobs.nixosTests.install.${system};
+          validate-openapi = hydraJobs.nixosTests.validate-openapi.${system};
+        }
+      );
 
-      packages =
-        nixpkgs.lib.recursiveUpdate
-          (forEachSystem (
-            system:
-            let
-              inherit (nixpkgs) lib;
-              pkgs = nixpkgs.legacyPackages.${system};
-              nixDependencies = lib.makeScope pkgs.newScope (
-                import (nix + "/packaging/dependencies.nix") {
-                  inherit pkgs;
-                  inherit (pkgs) stdenv;
-                  inputs = { };
-                }
-              );
-              nixComponents = lib.makeScope nixDependencies.newScope (
-                import (nix + "/packaging/components.nix") {
-                  officialRelease = true;
-                  inherit lib pkgs;
-                  src = nix;
-                  maintainers = [ ];
-                }
-              );
-              hydraComponents = mkHydraComponents { inherit pkgs nixComponents; };
-            in
-            # makeScope adds non-derivation attrs that fail `nix flake check`
-            removeAttrs hydraComponents [
-              "newScope"
-              "callPackage"
-              "overrideScope"
-              "packages"
-              "version"
-              "releaseVersion"
-            ]
-            // {
-              default = hydraComponents.hydra-tests;
+      packages = forEachSystem (
+        system:
+        let
+          inherit (nixpkgs) lib;
+          pkgs = nixpkgs.legacyPackages.${system};
+          nixDependencies = lib.makeScope pkgs.newScope (
+            import (nix + "/packaging/dependencies.nix") {
+              inherit pkgs;
+              inherit (pkgs) stdenv;
+              inputs = { };
             }
-          ))
-          (
-            forEachSystemIncDarwin (
-              system:
-              let
-                inherit (nixpkgs) lib;
-                pkgs = nixpkgs.legacyPackages.${system};
-                nixDependencies = lib.makeScope pkgs.newScope (
-                  import (nix + "/packaging/dependencies.nix") {
-                    inherit pkgs;
-                    inherit (pkgs) stdenv;
-                    inputs = { };
-                  }
-                );
-                nixComponents = lib.makeScope nixDependencies.newScope (
-                  import (nix + "/packaging/components.nix") {
-                    officialRelease = true;
-                    inherit lib pkgs;
-                    src = nix;
-                    maintainers = [ ];
-                  }
-                );
-                hydraBuilder = mkHydraBuilder { inherit pkgs nixComponents; };
-              in
-              # makeScope adds non-derivation attrs that fail `nix flake check`
-              removeAttrs hydraBuilder [
-                "newScope"
-                "callPackage"
-                "overrideScope"
-                "packages"
-                "version"
-                "releaseVersion"
-              ]
-            )
           );
+          nixComponents = lib.makeScope nixDependencies.newScope (
+            import (nix + "/packaging/components.nix") {
+              officialRelease = true;
+              inherit lib pkgs;
+              src = nix;
+              maintainers = [ ];
+            }
+          );
+          hydraComponents = mkHydraComponents { inherit pkgs nixComponents; };
+        in
+        # makeScope adds non-derivation attrs that fail `nix flake check`
+        removeAttrs hydraComponents [
+          "newScope"
+          "callPackage"
+          "overrideScope"
+          "packages"
+          "version"
+          "releaseVersion"
+        ]
+        // {
+          default = hydraComponents.hydra-tests;
+        }
+      );
 
       devShells = forEachSystem (system: {
         default = import ./packaging/dev-shell.nix {

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use hashbrown::HashMap;
 
-use super::{BuildQueueStats, Process};
+use super::BuildQueueStats;
+#[cfg(target_os = "linux")]
+use super::Process;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,6 +12,7 @@ pub struct QueueRunnerStats {
     status: &'static str,
     time: jiff::Timestamp,
     uptime: f64,
+    #[cfg(target_os = "linux")]
     proc: Option<Process>,
     supported_features: Vec<String>,
 
@@ -91,6 +94,7 @@ impl QueueRunnerStats {
             uptime: (time - state.started_at)
                 .total(jiff::Unit::Second)
                 .unwrap_or_default(),
+            #[cfg(target_os = "linux")]
             proc: Process::new(),
             supported_features: state.machines.get_supported_features(),
             build_count,

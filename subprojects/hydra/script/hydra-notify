@@ -15,7 +15,17 @@ use Hydra::Plugin;
 use Hydra::PostgresListener;
 use Hydra::TaskDispatcher;
 use Parallel::ForkManager;
-use Prometheus::Tiny::Shared;
+use Prometheus::Tiny;
+
+# Prometheus::Tiny::Shared is preferred because the metrics HTTP exporter
+# runs in a forked child and needs to see counter updates made by the
+# parent. On platforms where it is unavailable (darwin, because its
+# Hash::SharedMem dependency is marked broken in nixpkgs) we fall back to
+# Prometheus::Tiny and disable the exporter fork entirely below.
+my $prom_shared_available = eval {
+    require Prometheus::Tiny::Shared;
+    1;
+};
 
 STDERR->autoflush(1);
 STDOUT->autoflush(1);
@@ -23,7 +33,9 @@ binmode STDERR, ":encoding(utf8)";
 
 my $config = getHydraConfig();
 
-my $prom = Prometheus::Tiny::Shared->new;
+my $prom = $prom_shared_available
+    ? Prometheus::Tiny::Shared->new
+    : Prometheus::Tiny->new;
 # Note: It is very important to pre-declare any metrics before using them.
 # Add a new declaration for any new metrics you create. Metrics which are
 # not pre-declared disappear when their value is null. See:
@@ -55,7 +67,9 @@ $prom->declare(
 );
 
 my $promCfg = Hydra::Helper::Nix::getHydraNotifyPrometheusConfig($config);
-if (defined($promCfg)) {
+if (defined($promCfg) && !$prom_shared_available) {
+    print STDERR "Prometheus::Tiny::Shared is unavailable on this platform; not starting the hydra-notify Prometheus exporter. Metrics updated in the parent process would not be visible to a forked exporter child.\n";
+} elsif (defined($promCfg)) {
     print STDERR "Starting the Prometheus exporter, listening on http://${\$promCfg->{'listen_address'}}:${\$promCfg->{'port'}}/metrics.\n";
     my $fork_manager = Parallel::ForkManager->new(1);
     $fork_manager->start_child("metrics_exporter", sub {

@@ -45,7 +45,6 @@ http-body-util.workspace = true
 hyper                    = { workspace = true, features = [ "full" ] }
 hyper-util.workspace     = true
 jiff.workspace           = true
-procfs.workspace         = true
 prometheus               = { workspace = true, features = [ "process" ] }
 tower                    = { workspace = true, features = [ "util" ] }
 tower-http               = { workspace = true, features = [ "trace" ] }
@@ -59,6 +58,9 @@ shared                        = { path = "../crates/shared" }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs.workspace = true
 
 [build-dependencies]
 fs-err                      = { workspace = true }
