@@ -44,6 +44,16 @@ rec {
           flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra-ws;
     };
 
+  drv-daemon =
+    { pkgs, lib, ... }:
+    {
+      _file = ./default.nix;
+      imports = [ ./drv-daemon-module.nix ];
+      services.hydra-drv-daemon-dev.package =
+        lib.mkDefault
+          flakePackages.${pkgs.stdenv.hostPlatform.system}.hydra-drv-daemon;
+    };
+
   hydra =
     { ... }:
     {
@@ -53,6 +63,7 @@ rec {
         queue-runner
         builder
         ws-server
+        drv-daemon
       ];
     };
 
