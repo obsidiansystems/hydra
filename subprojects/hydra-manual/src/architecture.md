@@ -30,6 +30,12 @@ These components all share a single Nix store and PostgreSQL database on the mas
     - schedules build steps across builders
     - uploads results to a destination store
     - exposes a gRPC service that builders connect to
+- **`hydra-drv-daemon`** (Rust, optional)
+    - an alternative entry point for submitting builds, bypassing the evaluator
+    - speaks the nix-daemon protocol over a Unix socket, so clients use `nix-store --realise` or `nix build` as normal
+    - intercepts build requests, inserts them as Builds in the database, and waits for the queue runner to complete them
+    - proxies read operations and store uploads to the real upstream nix-daemon
+    - only supports input-addressed derivations (CA realisations are not yet surfaced)
 - **`hydra-notify`** (Perl)
     - dispatches post-build notifications to plugins (email, GitHub/GitLab status, Slack, etc.)
     - listens for PostgreSQL `NOTIFY` events from the queue runner
@@ -62,6 +68,8 @@ The repository is organized into subprojects:
   — the Rust queue runner
 - [`subprojects/hydra-builder/`](https://github.com/NixOS/hydra/tree/master/subprojects/hydra-builder)
   — the Rust build agent
+- [`subprojects/hydra-drv-daemon/`](https://github.com/NixOS/hydra/tree/master/subprojects/hydra-drv-daemon)
+  — the Rust nix-daemon proxy for ad-hoc build submission
 - [`subprojects/crates/`](https://github.com/NixOS/hydra/tree/master/subprojects/crates)
   — shared Rust libraries:
   - `proto` — generated gRPC/protobuf code for the builder ↔ queue-runner interface (message types, client stubs, server traits)

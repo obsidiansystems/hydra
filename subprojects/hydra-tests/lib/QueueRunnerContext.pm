@@ -10,8 +10,10 @@ use POSIX qw(dup2);
 use Hydra::Config;
 our @ISA = qw(Exporter);
 our @EXPORT = qw(
+    start_builder
     start_queue_runner
     wait_for_builds
+    wait_for_socket
     wait_for_url
 );
 
@@ -27,46 +29,52 @@ sub wait_for_url {
     return 0;
 }
 
-# Start a nix daemon for the given store config.
-# Returns the daemon harness.  Caller must kill_kill it when done.
+sub wait_for_socket {
+    my ($path) = @_;
+    for my $i (1..60) {
+        return 1 if -S $path;
+        select(undef, undef, undef, 0.5);
+    }
+    return 0;
+}
+
+# Start a nix daemon for the given store config and register it with $pg.
 sub start_nix_daemon {
-    my ($store) = @_;
+    my ($pg, $key, $store) = @_;
     make_path($store->{nix_state_dir});
 
-    my ($in, $out, $err) = ("", "", "");
-    my $harness;
-    {
-        local $ENV{NIX_REMOTE} = $store->{nix_store_uri};
-        local $ENV{NIX_STORE_DIR} = $store->{nix_store_dir};
-        local $ENV{NIX_STATE_DIR} = $store->{nix_state_dir};
-        local $ENV{NIX_CONF_DIR} = $store->{nix_conf_dir};
-        local $ENV{NIX_DAEMON_SOCKET_PATH} = $store->{nix_daemon_socket_path};
-        local $ENV{NIX_CONFIG} = "trusted-users = *";
-        $harness = IPC::Run::start(
-            ["nix-daemon"],
-            \$in, \$out, \$err,
-        );
-    }
+    $pg->spawn($key, ["nix-daemon"], env => {
+        NIX_REMOTE             => $store->{nix_store_uri},
+        NIX_STORE_DIR          => $store->{nix_store_dir},
+        NIX_STATE_DIR          => $store->{nix_state_dir},
+        NIX_CONF_DIR           => $store->{nix_conf_dir},
+        NIX_DAEMON_SOCKET_PATH => $store->{nix_daemon_socket_path},
+        NIX_CONFIG             => "trusted-users = *",
+    });
     my $socket = $store->{nix_daemon_socket_path};
     for (1..50) {
         last if -S $socket;
         select(undef, undef, undef, 0.1);
     }
     -S $socket or die "nix-daemon did not start: $socket\n";
-    return $harness;
 }
 
-# Start a queue runner process using systemd socket activation.
-# We bind TCP sockets ourselves (port 0 for OS-assigned ports), then
-# pass them to the queue runner via LISTEN_FDS/LISTEN_FDNAMES.
-# Returns ($harness, $rest_url, $grpc_addr, \$stdout_buf, \$stderr_buf, $daemon_harness).
-# Caller is responsible for calling $harness->kill_kill when done.
+# Start a queue runner process using systemd socket activation and
+# register it (plus its nix-daemon) with $pg.
+#
+# Returns ($rest_url, $grpc_addr).
+#
+# Options:
+#   rust_log: RUST_LOG value, default "error".
+#   queue_monitor_loop: 1 to leave the queue-monitor-loop running so
+#     the queue runner picks up new Builds rows on its own (the
+#     drv-daemon's ad-hoc flow needs this). Default 0 (disabled), which
+#     matches QueueRunnerBuildOne's manual /build_one driver.
 sub start_queue_runner {
-    my ($ctx, %opts) = @_;
+    my ($pg, $ctx, %opts) = @_;
     ref $ctx eq 'HydraTestContext' or die "start_queue_runner requires a HydraTestContext\n";
 
-    # Start a nix daemon for the queue runner to use.
-    my $daemon_harness = start_nix_daemon($ctx->{central});
+    start_nix_daemon($pg, "qr-nix-daemon", $ctx->{central});
 
     my $config_dir = $ENV{T2_HARNESS_TEMP_DIR}
         // $ctx->{central}{hydra_data};
@@ -118,9 +126,18 @@ sub start_queue_runner {
     my $rest_fd = fileno($rest_sock);
     my $grpc_fd = fileno($grpc_sock);
 
-    my ($qr_in, $qr_out, $qr_err) = ("", "", "");
+    my @args = (
+        "hydra-queue-runner",
+        "--config-path", $config_file,
+        "--rest-bind", "-",
+        "--grpc-bind", "-",
+    );
+    push @args, "--disable-queue-monitor-loop" unless $opts{queue_monitor_loop};
 
     # Start the queue runner, connecting to the nix daemon via unix://.
+    # We use IPC::Run directly (not $pg->spawn) because we need the
+    # init callback to dup2 the socket fds into place.
+    my ($qr_in, $qr_out, $qr_err) = ("", "", "");
     my $qr_harness;
     {
         local @ENV{keys %{$ctx->{central_env}}} = values %{$ctx->{central_env}};
@@ -132,12 +149,7 @@ sub start_queue_runner {
         # Don't set LISTEN_PID — listenfd skips the PID check when it's unset.
         delete $ENV{LISTEN_PID};
         $qr_harness = IPC::Run::start(
-            ["hydra-queue-runner",
-                "--config-path", $config_file,
-                "--rest-bind", "-",
-                "--grpc-bind", "-",
-                "--disable-queue-monitor-loop",
-            ],
+            \@args,
             \$qr_in, \$qr_out, \$qr_err,
             init => sub {
                 # In the child: place sockets at fd 3 and 4.
@@ -149,6 +161,7 @@ sub start_queue_runner {
             },
         );
     }
+    $pg->register("queue-runner", $qr_harness, \$qr_out, \$qr_err);
 
     # Close our copies of the sockets (child has its own).
     close($rest_sock);
@@ -157,7 +170,27 @@ sub start_queue_runner {
     my $rest_url = "http://[::1]:$rest_port";
     my $grpc_addr = "[::1]:$grpc_port";
 
-    return ($qr_harness, $rest_url, $grpc_addr, \$qr_out, \$qr_err, $daemon_harness);
+    return ($rest_url, $grpc_addr);
+}
+
+# Start a hydra-builder against an already-running queue runner
+# and register it with $pg as "builder".
+sub start_builder {
+    my ($pg, $ctx, $grpc_addr, %opts) = @_;
+    ref $ctx eq 'HydraTestContext' or die "start_builder requires a HydraTestContext\n";
+
+    $pg->spawn("builder",
+        ["hydra-builder", "--gateway-endpoint", "http://$grpc_addr"],
+        env => {
+            NIX_REMOTE    => $ctx->{builder}{nix_store_uri},
+            NIX_CONF_DIR  => $ctx->{builder}{nix_conf_dir},
+            NIX_STATE_DIR => $ctx->{builder}{nix_state_dir},
+            # TODO: hydra-builder reads NIX_STORE_DIR to report its store
+            # dir to the queue runner; should use the store URI instead.
+            NIX_STORE_DIR => $ctx->{builder}{nix_store_dir},
+            RUST_LOG      => $opts{rust_log} // "error",
+        },
+    );
 }
 
 # Poll the queue runner REST API until all given build IDs are no longer

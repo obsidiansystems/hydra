@@ -53,6 +53,19 @@ sub spawn {
     return $harness;
 }
 
+# Register an externally-created harness (e.g. from start_queue_runner
+# which needs a custom IPC::Run init callback for fd placement).
+sub register {
+    my ($self, $key, $harness, $out_ref, $err_ref) = @_;
+    $self->{procs}{$key} = {
+        label   => $key,
+        harness => $harness,
+        out     => $out_ref,
+        err     => $err_ref,
+    };
+    push @{$self->{order}}, $key;
+}
+
 # Pump all harnesses and flush any complete log lines to stderr.
 sub pump_logs {
     my ($self) = @_;

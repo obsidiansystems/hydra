@@ -20,25 +20,14 @@ sub runBuilds {
 
     my $pg = ProcessGroup->new;
 
-    my ($qr_harness, $base_url, $grpc_addr, $qr_out, $qr_err, $qr_daemon) = start_queue_runner($ctx,
+    my ($base_url, $grpc_addr) = start_queue_runner($pg, $ctx,
         rust_log => "queue_runner=debug,info",
     );
-    $pg->{procs}{"queue-runner"} = {
-        label => "queue-runner", harness => $qr_harness, out => $qr_out, err => $qr_err,
-    };
-    push @{$pg->{order}}, "queue-runner";
 
-    my $bl_daemon = QueueRunnerContext::start_nix_daemon($ctx->{builder});
+    QueueRunnerContext::start_nix_daemon($pg, "builder-nix-daemon", $ctx->{builder});
 
-    $pg->spawn("builder",
-        ["hydra-builder", "--gateway-endpoint", "http://$grpc_addr"],
-        env => {
-            NIX_REMOTE    => $ctx->{builder}{nix_daemon_uri},
-            NIX_CONF_DIR  => $ctx->{builder}{nix_conf_dir},
-            NIX_STATE_DIR => $ctx->{builder}{nix_state_dir},
-            NIX_STORE_DIR => $ctx->{builder}{nix_store_dir},
-            RUST_LOG      => "hydra_builder=debug,info",
-        },
+    start_builder($pg, $ctx, $grpc_addr,
+        rust_log => "hydra_builder=debug,info",
     );
 
     my $ua = LWP::UserAgent->new(timeout => 2);
@@ -73,8 +62,6 @@ sub runBuilds {
     alarm 0;
 
     $pg->stop;
-    $bl_daemon->kill_kill(grace => 2);
-    $qr_daemon->kill_kill(grace => 2);
 
     if (!$ok) {
         print STDERR "runBuilds failed: $err" if $err;

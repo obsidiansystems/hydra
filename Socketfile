@@ -1,2 +1,3 @@
-hydra-server: http=:63333
-hydra-queue-runner: rest=:64446 grpc=:50051
+hydra-server: http=tcp://:63333
+hydra-queue-runner: rest=tcp://:64446 grpc=tcp://:50051
+hydra-drv-daemon: daemon=unix://.hydra-data/drv-daemon.sock

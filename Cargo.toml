@@ -1,6 +1,11 @@
 [workspace]
 
-members  = [ "subprojects/hydra-builder", "subprojects/hydra-queue-runner", "subprojects/crates/*" ]
+members = [
+    "subprojects/hydra-builder",
+    "subprojects/hydra-drv-daemon",
+    "subprojects/hydra-queue-runner",
+    "subprojects/crates/*",
+]
 resolver = "2"
 
 [workspace.package]
@@ -29,12 +34,16 @@ futures = "0.3"
 futures-util = "0.3"
 gethostname = "1"
 h2 = "0.4"
+harmonia-protocol = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-aterm = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-build-result = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-core = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-nar-info = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-path-info = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-remote = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-utils-base-encoding = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-utils-hash = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-utils-io = { git = "https://github.com/nix-community/harmonia.git" }
 hashbrown = "0.16"
 http = "1.1"
 http-body-util = "0.1"
@@ -106,9 +115,15 @@ store-path-utils = { path = "subprojects/crates/store-path-utils" }
 test-utils       = { path = "subprojects/crates/test-utils" }
 
 [patch.crates-io]
+harmonia-nar                 = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-protocol            = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-protocol-derive     = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-aterm         = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-build-result  = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-core          = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-nar-info      = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-store-path-info     = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-remote        = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-utils-base-encoding = { git = "https://github.com/nix-community/harmonia.git" }
 harmonia-utils-hash          = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-utils-io            = { git = "https://github.com/nix-community/harmonia.git" }

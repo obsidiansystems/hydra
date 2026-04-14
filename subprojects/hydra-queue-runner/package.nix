@@ -37,11 +37,11 @@ rustPlatform.buildRustPackage {
     outputHashes = import ../../cargo-output-hashes.nix;
   };
 
-  # The source fileset above intentionally excludes hydra-builder,
-  # so drop it from the workspace members to keep cargo from trying to
-  # load its (absent) manifest.
+  # The source fileset above intentionally excludes the other Rust
+  # binary crates, so drop them from the workspace members to keep
+  # cargo from trying to load their (absent) manifests.
   postPatch = ''
-    sed -i 's|"subprojects/hydra-builder", ||' Cargo.toml
+    sed -i '/hydra-queue-runner/!{/"subprojects\/hydra-/d;}' Cargo.toml
   '';
 
   buildAndTestSubdir = "subprojects/hydra-queue-runner";

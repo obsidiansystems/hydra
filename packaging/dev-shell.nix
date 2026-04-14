@@ -7,6 +7,7 @@
   hydra-linters,
   hydra-queue-runner,
   hydra-builder,
+  hydra-drv-daemon,
   foreman,
 }:
 
@@ -21,6 +22,7 @@ let
     hydra-linters
     hydra-queue-runner
     hydra-builder
+    hydra-drv-daemon
   ];
 
   # Collect and deduplicate build inputs from all components,
