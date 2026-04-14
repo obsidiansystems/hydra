@@ -7,7 +7,7 @@ use harmonia_store_core::derived_path::OutputName;
 use harmonia_store_core::store_path::{StoreDir, StorePath};
 
 use super::models::{
-    Build, BuildSmall, BuildStatus, BuildSteps, InsertBuildMetric, InsertBuildProduct,
+    Build, BuildID, BuildSmall, BuildStatus, BuildSteps, InsertBuildMetric, InsertBuildProduct,
     InsertBuildStep, InsertBuildStepOutput, Jobset, UpdateBuild, UpdateBuildStep,
     UpdateBuildStepInFinish,
 };
@@ -404,7 +404,6 @@ impl Connection {
         Ok(results)
     }
 
-    #[tracing::instrument(skip(self), err)]
     pub async fn get_status(&mut self) -> sqlx::Result<Option<serde_json::Value>> {
         Ok(
             sqlx::query!("SELECT status FROM systemstatus WHERE what = 'queue-runner';",)
@@ -413,12 +412,129 @@ impl Connection {
                 .map(|v| v.status),
         )
     }
+
+    /// Find or create the `adhoc/adhoc` jobset used by builds requested
+    /// directly through the drv-daemon. Returns the jobset id.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn ensure_adhoc_jobset(&mut self) -> sqlx::Result<i32> {
+        let mut tx = self.conn.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO Users (userName, fullName, emailAddress, password)
+             VALUES ('adhoc', 'Ad-hoc', 'adhoc@localhost', '')
+             ON CONFLICT (userName) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO Projects (name, displayName, description, owner, enabled, hidden)
+             VALUES ('adhoc', 'Ad-hoc', 'Ad-hoc builds via drv-daemon', 'adhoc', 1, 1)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO Jobsets
+                (name, project, description, nixExprInput, nixExprPath, emailOverride, type, hidden)
+             VALUES ('adhoc', 'adhoc', 'Ad-hoc builds via drv-daemon', '', '', '', 0, 1)
+             ON CONFLICT (project, name) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let id: i32 =
+            sqlx::query_scalar("SELECT id FROM Jobsets WHERE project = 'adhoc' AND name = 'adhoc'")
+                .fetch_one(&mut *tx)
+                .await?;
+
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Look up the final state of a finished Build, including its outputs.
+    /// Returns `None` while the build is still scheduled (`finished = 0`)
+    /// or has no buildStatus recorded.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_finished_build(
+        &mut self,
+        build_id: BuildID,
+    ) -> sqlx::Result<Option<FinishedBuild>> {
+        let row = sqlx::query_as::<_, (Option<i32>, Option<i32>, Option<i32>)>(
+            "SELECT buildStatus, startTime, stopTime
+             FROM builds
+             WHERE id = $1 AND finished = 1",
+        )
+        .bind(build_id)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        let Some((Some(status_int), start_time, stop_time)) = row else {
+            return Ok(None);
+        };
+        let Some(status) = BuildStatus::from_i32(status_int) else {
+            return Ok(None);
+        };
+
+        let outputs = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT name, path FROM buildoutputs WHERE build = $1",
+        )
+        .bind(build_id)
+        .fetch_all(&mut *self.conn)
+        .await?;
+
+        Ok(Some(FinishedBuild {
+            status,
+            start_time,
+            stop_time,
+            outputs,
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct FinishedBuild {
+    pub status: BuildStatus,
+    pub start_time: Option<i32>,
+    pub stop_time: Option<i32>,
+    pub outputs: Vec<(String, Option<String>)>,
 }
 
 impl Transaction<'_> {
     #[tracing::instrument(skip(self), err)]
     pub async fn commit(self) -> sqlx::Result<()> {
         self.tx.commit().await
+    }
+
+    /// Insert a not-yet-finished Build referencing an existing .drv path.
+    /// The row only becomes visible to the queue runner after the
+    /// surrounding transaction commits, which gives the caller a window to
+    /// register a listener for the returned id without races.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn insert_adhoc_build(
+        &mut self,
+        jobset_id: i32,
+        nix_name: &str,
+        drv_path: &str,
+        system: &str,
+    ) -> sqlx::Result<BuildID> {
+        let id: BuildID = sqlx::query_scalar(
+            "INSERT INTO Builds (
+                finished, timestamp, jobset_id, job, nixname, drvPath, system,
+                maxsilent, timeout, ischannel, iscurrent, priority, globalpriority, keep
+             ) VALUES (
+                0, EXTRACT(EPOCH FROM NOW())::INT4, $1, $2, $3, $4, $5,
+                7200, 36000, 0, 0, 100, 0, 0
+             ) RETURNING id",
+        )
+        .bind(jobset_id)
+        .bind(nix_name)
+        .bind(nix_name)
+        .bind(drv_path)
+        .bind(system)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        Ok(id)
     }
 
     #[tracing::instrument(skip(self, v), err)]
