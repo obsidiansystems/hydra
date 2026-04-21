@@ -404,6 +404,29 @@ impl Connection {
         Ok(results)
     }
 
+    pub async fn resolve_dynamic_input<'a>(
+        &mut self,
+        store_dir: &StoreDir,
+        drv_path: &StorePath,
+        outputs: &[&'a OutputName],
+    ) -> sqlx::Result<(StorePath, Vec<&'a OutputName>)> {
+        // TODO: make this more efficient
+        let queries = (1..outputs.len())
+            .map(|n| (drv_path, &outputs[..n]))
+            .collect::<Vec<_>>();
+
+        let results = self.resolve_drv_output_chains(store_dir, &queries).await?;
+
+        let (num_resolved, new_drv_path) = results
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| Some((idx + 1, item.as_ref()?)))
+            .next_back()
+            .unwrap_or((0, drv_path));
+
+        Ok((new_drv_path.clone(), outputs[num_resolved..].into()))
+    }
+
     #[tracing::instrument(skip(self), err)]
     pub async fn get_status(&mut self) -> sqlx::Result<Option<serde_json::Value>> {
         Ok(
