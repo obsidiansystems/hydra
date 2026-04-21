@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
+use harmonia_store_core::derivation::OutputInputs;
 use hashbrown::{HashMap, HashSet};
 
 use super::{Build, Jobset};
@@ -186,13 +187,52 @@ impl Step {
         })
     }
 
-    pub fn get_input_drvs(&self) -> Option<Vec<nix_utils::StorePath>> {
+    pub fn get_input_drvs(
+        &self,
+    ) -> Option<BTreeSet<(nix_utils::StorePath, Vec<nix_utils::OutputName>)>> {
+        fn flatten_output_inputs(
+            prefix: Vec<nix_utils::OutputName>,
+            inputs: OutputInputs,
+        ) -> BTreeSet<Vec<nix_utils::OutputName>> {
+            let this = if !inputs.outputs.is_empty() {
+                // We don't care about the actual output name, just that it's needed
+                Some(prefix.clone())
+            } else {
+                None
+            };
+
+            inputs
+                .dynamic_outputs
+                .into_iter()
+                .map(|(name, output_inputs)| {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.push(name);
+                    flatten_output_inputs(new_prefix, output_inputs)
+                })
+                .flatten()
+                .chain(this.into_iter())
+                .collect()
+        }
+
         let drv = self.drv.load_full();
         drv.as_ref().map(|drv| {
-            harmonia_store_core::derivation::DerivationInputs::from(&drv.inputs)
-                .drvs
-                .into_keys()
-                .collect::<Vec<_>>()
+            let inputs = harmonia_store_core::derivation::DerivationInputs::from(&drv.inputs);
+            inputs
+                .srcs
+                .into_iter()
+                .map(|drv_path| (drv_path, Vec::new()))
+                .chain(
+                    inputs
+                        .drvs
+                        .into_iter()
+                        .map(|(drv_path, output_inputs)| {
+                            flatten_output_inputs(Vec::new(), output_inputs)
+                                .into_iter()
+                                .map(move |outputs| (drv_path.clone(), outputs))
+                        })
+                        .flatten(),
+                )
+                .collect()
         })
     }
 

@@ -2084,27 +2084,28 @@ impl State {
         };
 
         let step2 = step.clone();
-        let mut stream = futures::StreamExt::map(tokio_stream::iter(input_drvs), |i| {
-            let build = build.clone();
-            let step = step2.clone();
-            let finished_drvs = finished_drvs.clone();
-            let new_steps = new_steps.clone();
-            let new_runnable = new_runnable.clone();
-            async move {
-                Box::pin(self.create_step(
-                    // conn,
-                    build,
-                    i,
-                    None,
-                    Some(step),
-                    finished_drvs,
-                    new_steps,
-                    new_runnable,
-                ))
-                .await
-            }
-        })
-        .buffered(25);
+        let mut stream =
+            futures::StreamExt::map(tokio_stream::iter(input_drvs), |(input_path, _relation)| {
+                let build = build.clone();
+                let step = step2.clone();
+                let finished_drvs = finished_drvs.clone();
+                let new_steps = new_steps.clone();
+                let new_runnable = new_runnable.clone();
+                async move {
+                    Box::pin(self.create_step(
+                        // conn,
+                        build,
+                        input_path,
+                        None,
+                        Some(step),
+                        finished_drvs,
+                        new_steps,
+                        new_runnable,
+                    ))
+                    .await
+                }
+            })
+            .buffered(25);
         while let Some(v) = tokio_stream::StreamExt::next(&mut stream).await {
             match v {
                 CreateStepResult::None => (),
