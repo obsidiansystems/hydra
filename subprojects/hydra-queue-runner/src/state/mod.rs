@@ -459,6 +459,7 @@ impl State {
                     .create_step(
                         build.clone(),
                         resolved_path,
+                        &Vec::new(),
                         Some(build.clone()),
                         None,
                         Arc::new(parking_lot::RwLock::new(HashSet::new())),
@@ -466,6 +467,7 @@ impl State {
                         Arc::new(parking_lot::RwLock::new(HashSet::new())),
                     )
                     .await
+                    .0
                 {
                     CreateStepResult::None => {
                         return Err(anyhow::anyhow!("Could not create resolved build step"));
@@ -1816,6 +1818,9 @@ impl State {
                 // conn,
                 build.clone(),
                 build.drv_path.clone(),
+                // We cannot specify builds with a dynamic output, such builds should be a
+                // dependency of a final non-dynamic derivation
+                &Vec::new(),
                 Some(build.clone()),
                 None,
                 finished_drvs.clone(),
@@ -1823,6 +1828,8 @@ impl State {
                 new_runnable.clone(),
             )
             .await
+            .0 // Since we passed in an empty dynamic path, we will also get one out and can ignore
+               // it
         {
             CreateStepResult::None => None,
             CreateStepResult::Valid(dep) => Some(dep),
@@ -1911,18 +1918,23 @@ impl State {
         &self,
         build: Arc<Build>,
         drv_path: nix_utils::StorePath,
+        relation: &[nix_utils::OutputName],
         referring_build: Option<Arc<Build>>,
         referring_step: Option<Arc<Step>>,
         finished_drvs: Arc<parking_lot::RwLock<HashSet<nix_utils::StorePath>>>,
         new_steps: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
         new_runnable: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
-    ) -> CreateStepResult {
+    ) -> (CreateStepResult, Vec<nix_utils::OutputName>) {
         use futures::stream::StreamExt as _;
+
+        let Ok((drv_path, relation)) = self.resolve_dynamic_input(&drv_path, relation).await else {
+            return (CreateStepResult::None, Vec::new());
+        };
 
         {
             let finished_drvs = finished_drvs.read();
             if finished_drvs.contains(&drv_path) {
-                return CreateStepResult::None;
+                return (CreateStepResult::None, Vec::new());
             }
         }
 
@@ -1930,7 +1942,7 @@ impl State {
             self.steps
                 .create(&drv_path, referring_build.as_ref(), referring_step.as_ref());
         if !is_new {
-            return CreateStepResult::Valid(step);
+            return (CreateStepResult::Valid(step), relation);
         }
         self.metrics.queue_steps_created.inc();
         tracing::debug!("considering derivation '{drv_path}'");
@@ -1940,7 +1952,7 @@ impl State {
             .ok()
             .flatten()
         else {
-            return CreateStepResult::None;
+            return (CreateStepResult::None, Vec::new());
         };
         if let Some(fod_checker) = &self.fod_checker {
             fod_checker.add_ca_drv_parsed(&drv_path, &drv);
@@ -2027,7 +2039,7 @@ impl State {
 
         if self.check_cached_failure(step.clone()).await {
             step.set_previous_failure(true);
-            return CreateStepResult::PreviousFailure(step);
+            return (CreateStepResult::PreviousFailure(step), relation);
         }
 
         tracing::debug!("missing outputs: {missing_outputs:?}");
@@ -2075,13 +2087,13 @@ impl State {
 
             finished_drvs.write().insert(drv_path.clone());
             step.set_finished(true);
-            return CreateStepResult::None;
+            return (CreateStepResult::None, Vec::new());
         }
 
         tracing::debug!("creating build step '{drv_path}");
         let Some(input_drvs) = step.get_input_drvs() else {
             // this should never happen because we always a a drv set at this point in time
-            return CreateStepResult::None;
+            return (CreateStepResult::None, Vec::new());
         };
 
         let step2 = step.clone();
@@ -2093,20 +2105,18 @@ impl State {
                 let new_steps = new_steps.clone();
                 let new_runnable = new_runnable.clone();
                 async move {
-                    (
-                        Box::pin(self.create_step(
-                            // conn,
-                            build,
-                            input_path,
-                            None,
-                            Some(step),
-                            finished_drvs,
-                            new_steps,
-                            new_runnable,
-                        ))
-                        .await,
-                        relation,
-                    )
+                    Box::pin(self.create_step(
+                        // conn,
+                        build,
+                        input_path,
+                        &relation,
+                        None,
+                        Some(step),
+                        finished_drvs,
+                        new_steps,
+                        new_runnable,
+                    ))
+                    .await
                 }
             })
             .buffered(25);
@@ -2128,7 +2138,7 @@ impl State {
                     }
                 }
                 CreateStepResult::PreviousFailure(step) => {
-                    return CreateStepResult::PreviousFailure(step);
+                    return (CreateStepResult::PreviousFailure(step), relation);
                 }
             }
         }
@@ -2145,7 +2155,28 @@ impl State {
             let mut new_steps = new_steps.write();
             new_steps.insert(step.clone());
         }
-        CreateStepResult::Valid(step)
+        (CreateStepResult::Valid(step), relation)
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn resolve_dynamic_input(
+        &self,
+        drv_path: &nix_utils::StorePath,
+        relation: &[nix_utils::OutputName],
+    ) -> anyhow::Result<(nix_utils::StorePath, Vec<nix_utils::OutputName>)> {
+        let mut db = self.db.get().await?;
+        let (resolved_drv_path, resolved_relation) = db
+            .resolve_dynamic_input(
+                self.store.store_dir(),
+                drv_path,
+                &relation.iter().collect::<Vec<_>>(),
+            )
+            .await?;
+
+        Ok((
+            resolved_drv_path,
+            resolved_relation.into_iter().cloned().collect(),
+        ))
     }
 
     #[tracing::instrument(skip(self))]
