@@ -1912,7 +1912,7 @@ impl State {
         build: Arc<Build>,
         drv_path: nix_utils::StorePath,
         referring_build: Option<Arc<Build>>,
-        referring_step: Option<Arc<Step>>,
+        referring_step: Option<(Arc<Step>, Vec<nix_utils::OutputName>)>,
         finished_drvs: Arc<parking_lot::RwLock<HashSet<nix_utils::StorePath>>>,
         new_steps: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
         new_runnable: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
@@ -1926,9 +1926,13 @@ impl State {
             }
         }
 
-        let (step, is_new) =
-            self.steps
-                .create(&drv_path, referring_build.as_ref(), referring_step.as_ref());
+        let (step, is_new) = self.steps.create(
+            &drv_path,
+            referring_build.as_ref(),
+            referring_step
+                .as_ref()
+                .map(|(step, relation)| (step, relation.clone())),
+        );
         if !is_new {
             return CreateStepResult::Valid(step);
         }
@@ -2092,21 +2096,30 @@ impl State {
                 let finished_drvs = finished_drvs.clone();
                 let new_steps = new_steps.clone();
                 let new_runnable = new_runnable.clone();
+
                 async move {
-                    (
-                        Box::pin(self.create_step(
-                            // conn,
-                            build,
-                            input_path,
-                            None,
-                            Some(step),
-                            finished_drvs,
-                            new_steps,
-                            new_runnable,
-                        ))
-                        .await,
-                        relation,
-                    )
+                    // Do a first dynamic input resolution now, since we won't have completed events
+                    // for them to perform further dynamic resolution
+                    if let Ok((input_path, relation)) =
+                        self.resolve_dynamic_input(&input_path, &relation).await
+                    {
+                        (
+                            Box::pin(self.create_step(
+                                // conn,
+                                build,
+                                input_path,
+                                None,
+                                Some((step, relation.clone())),
+                                finished_drvs,
+                                new_steps,
+                                new_runnable,
+                            ))
+                            .await,
+                            relation,
+                        )
+                    } else {
+                        (CreateStepResult::None, Vec::new())
+                    }
                 }
             })
             .buffered(25);
@@ -2146,6 +2159,27 @@ impl State {
             new_steps.insert(step.clone());
         }
         CreateStepResult::Valid(step)
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn resolve_dynamic_input(
+        &self,
+        drv_path: &nix_utils::StorePath,
+        relation: &[nix_utils::OutputName],
+    ) -> anyhow::Result<(nix_utils::StorePath, Vec<nix_utils::OutputName>)> {
+        let mut db = self.db.get().await?;
+        let (resolved_drv_path, resolved_relation) = db
+            .resolve_dynamic_input(
+                self.store.store_dir(),
+                drv_path,
+                &relation.iter().collect::<Vec<_>>(),
+            )
+            .await?;
+
+        Ok((
+            resolved_drv_path,
+            resolved_relation.into_iter().cloned().collect(),
+        ))
     }
 
     #[tracing::instrument(skip(self))]

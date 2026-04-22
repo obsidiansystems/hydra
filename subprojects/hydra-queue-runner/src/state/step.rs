@@ -18,6 +18,15 @@ pub struct DynamicDep {
     pub outputs: Vec<nix_utils::OutputName>,
 }
 
+#[derive(Debug, Clone)]
+struct DynamicReverseDep {
+    // The step that depends on us
+    pub step: Weak<Step>,
+    /// List of output names of intermediate derivations in order.
+    /// e.g. for a dynamic derivation `aaaa-dyn.drv^foo^bar^out` this would be ["foo", "bar"]
+    pub relation: Vec<nix_utils::OutputName>,
+}
+
 #[derive(Debug)]
 pub struct StepAtomicState {
     /// Whether the step has finished initialisation.
@@ -42,6 +51,7 @@ pub struct StepAtomicState {
     pub deps_len: AtomicU64,
     pub dynamic_deps_len: AtomicU64,
     pub rdeps_len: AtomicU64,
+    pub dynamic_rdeps_len: AtomicU64,
 }
 
 impl StepAtomicState {
@@ -62,6 +72,7 @@ impl StepAtomicState {
             deps_len: 0.into(),
             dynamic_deps_len: 0.into(),
             rdeps_len: 0.into(),
+            dynamic_rdeps_len: 0.into(),
         }
     }
 
@@ -85,7 +96,7 @@ pub(super) struct StepState {
     /// The build steps that depend on this step.
     rdeps: Vec<Weak<Step>>,
     /// The build steps that depend on outputs of this step
-    dynamic_rdeps: HashSet<Weak<Step>>,
+    dynamic_rdeps: Vec<DynamicReverseDep>,
     /// Builds that have this step as the top-level derivation.
     builds: Vec<Weak<Build>>,
     /// Jobsets to which this step belongs. Used for determining scheduling priority.
@@ -104,7 +115,7 @@ impl StepState {
             deps: HashSet::new(),
             dynamic_deps: HashSet::new(),
             rdeps: Vec::new(),
-            dynamic_rdeps: HashSet::new(),
+            dynamic_rdeps: Vec::new(),
             builds: Vec::new(),
             jobsets: HashSet::new(),
         }
@@ -453,7 +464,7 @@ impl Step {
     pub fn add_referring_data(
         &self,
         referring_build: Option<&Arc<Build>>,
-        referring_step: Option<&Arc<Self>>,
+        referring_step: Option<(&Arc<Self>, Vec<nix_utils::OutputName>)>,
     ) {
         if referring_build.is_none() && referring_step.is_none() {
             return;
@@ -463,11 +474,21 @@ impl Step {
         if let Some(referring_build) = referring_build {
             state.builds.push(Arc::downgrade(referring_build));
         }
-        if let Some(referring_step) = referring_step {
-            state.rdeps.push(Arc::downgrade(referring_step));
-            self.atomic_state
-                .rdeps_len
-                .store(state.rdeps.len() as u64, Ordering::Relaxed);
+        if let Some((referring_step, relation)) = referring_step {
+            if relation.is_empty() {
+                state.rdeps.push(Arc::downgrade(referring_step));
+                self.atomic_state
+                    .rdeps_len
+                    .store(state.rdeps.len() as u64, Ordering::Relaxed);
+            } else {
+                state.dynamic_rdeps.push(DynamicReverseDep {
+                    step: Arc::downgrade(referring_step),
+                    relation,
+                });
+                self.atomic_state
+                    .dynamic_rdeps_len
+                    .store(state.dynamic_rdeps.len() as u64, Ordering::Relaxed);
+            }
         }
     }
 
@@ -596,7 +617,7 @@ impl Steps {
         &self,
         drv_path: &nix_utils::StorePath,
         referring_build: Option<&Arc<Build>>,
-        referring_step: Option<&Arc<Step>>,
+        referring_step: Option<(&Arc<Step>, Vec<nix_utils::OutputName>)>,
     ) -> (Arc<Step>, bool) {
         let mut is_new = false;
         let mut steps = self.inner.write();
