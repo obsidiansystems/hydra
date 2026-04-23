@@ -9,15 +9,6 @@ use hashbrown::{HashMap, HashSet};
 use super::{Build, Jobset};
 use db::models::BuildID;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct DynamicDep {
-    // The real step we depend on
-    pub step: Arc<Step>,
-    /// List of output names of intermediate derivations in order.
-    /// e.g. for a dynamic derivation `aaaa-dyn.drv^foo^bar^out` this would be ["foo", "bar"]
-    pub outputs: Vec<nix_utils::OutputName>,
-}
-
 #[derive(Debug, Clone)]
 pub struct DynamicReverseDep {
     // The step that depends on us
@@ -49,7 +40,6 @@ pub struct StepAtomicState {
     pub last_supported: super::AtomicDateTime,
 
     pub deps_len: AtomicU64,
-    pub dynamic_deps_len: AtomicU64,
     pub rdeps_len: AtomicU64,
     pub dynamic_rdeps_len: AtomicU64,
 }
@@ -70,7 +60,6 @@ impl StepAtomicState {
             // So we still follow max_unsupported_time
             last_supported: super::AtomicDateTime::new(runnable_since),
             deps_len: 0.into(),
-            dynamic_deps_len: 0.into(),
             rdeps_len: 0.into(),
             dynamic_rdeps_len: 0.into(),
         }
@@ -91,8 +80,6 @@ impl StepAtomicState {
 pub(super) struct StepState {
     /// The resolved build steps on which this step depends
     deps: HashSet<Arc<Step>>,
-    /// The unresolved dynamic build steps on which this step depends
-    dynamic_deps: HashSet<DynamicDep>,
     /// The build steps that depend on this step.
     rdeps: Vec<Weak<Step>>,
     /// The build steps that depend on outputs of this step
@@ -113,7 +100,6 @@ impl StepState {
     pub(super) fn new() -> Self {
         Self {
             deps: HashSet::new(),
-            dynamic_deps: HashSet::new(),
             rdeps: Vec::new(),
             dynamic_rdeps: Vec::new(),
             builds: Vec::new(),
@@ -429,14 +415,6 @@ impl Step {
         self.atomic_state
             .deps_len
             .store(state.deps.len() as u64, Ordering::Relaxed);
-    }
-
-    pub fn add_dynamic_dep(&self, dep: DynamicDep) {
-        let mut state = self.state.write();
-        state.dynamic_deps.insert(dep);
-        self.atomic_state
-            .dynamic_deps_len
-            .store(state.dynamic_deps.len() as u64, Ordering::Relaxed);
     }
 
     pub fn remove_dep(&self, dep: &Arc<Self>) {

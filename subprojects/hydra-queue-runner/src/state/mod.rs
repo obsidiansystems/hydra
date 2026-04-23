@@ -36,7 +36,6 @@ use crate::config::{App, Cli};
 use crate::state::build::get_mark_build_sccuess_data;
 pub use crate::state::fod_checker::FodChecker;
 use crate::state::machine::Machines;
-use crate::state::step::DynamicDep;
 use crate::utils::finish_build_step;
 
 pub type System = String;
@@ -2155,41 +2154,31 @@ impl State {
                     if let Ok((input_path, relation)) =
                         self.resolve_dynamic_input(&input_path, &relation).await
                     {
-                        (
-                            Box::pin(self.create_step(
-                                // conn,
-                                build,
-                                input_path,
-                                None,
-                                Some((step, relation.clone())),
-                                finished_drvs,
-                                new_steps,
-                                new_runnable,
-                            ))
-                            .await,
-                            relation,
-                        )
+                        Box::pin(self.create_step(
+                            // conn,
+                            build,
+                            input_path,
+                            None,
+                            Some((step, relation.clone())),
+                            finished_drvs,
+                            new_steps,
+                            new_runnable,
+                        ))
+                        .await
                     } else {
-                        (CreateStepResult::None, Vec::new())
+                        CreateStepResult::None
                     }
                 }
             })
             .buffered(25);
-        while let Some((result, relation)) = tokio_stream::StreamExt::next(&mut stream).await {
+        while let Some(result) = tokio_stream::StreamExt::next(&mut stream).await {
             match result {
                 CreateStepResult::None => (),
                 CreateStepResult::Valid(dep) => {
                     if !dep.get_finished() && !dep.get_previous_failure() {
                         // finished can be true if a step was returned, that already exists in
                         // self.steps and is currently being processed for completion
-                        if relation.is_empty() {
-                            step.add_dep(dep);
-                        } else {
-                            step.add_dynamic_dep(DynamicDep {
-                                step: dep,
-                                outputs: relation,
-                            });
-                        }
+                        step.add_dep(dep);
                     }
                 }
                 CreateStepResult::PreviousFailure(step) => {
