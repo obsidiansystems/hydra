@@ -19,7 +19,7 @@ pub struct DynamicDep {
 }
 
 #[derive(Debug, Clone)]
-struct DynamicReverseDep {
+pub struct DynamicReverseDep {
     // The step that depends on us
     pub step: Weak<Step>,
     /// List of output names of intermediate derivations in order.
@@ -459,6 +459,11 @@ impl Step {
     pub fn clone_rdeps(&self) -> Vec<Weak<Step>> {
         let state = self.state.read();
         state.rdeps.clone()
+    }
+
+    pub fn clone_dyn_rdeps(&self) -> Vec<DynamicReverseDep> {
+        let state = self.state.read();
+        state.dynamic_rdeps.clone()
     }
 
     pub fn add_referring_data(

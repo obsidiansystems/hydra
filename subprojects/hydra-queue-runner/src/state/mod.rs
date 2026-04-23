@@ -1360,13 +1360,65 @@ impl State {
         {
             let mut db = self.db.get().await?;
             let mut tx = db.begin_transaction().await?;
-            for b in direct {
+            for b in &direct {
                 tx.notify_build_finished(b.id, &[]).await?;
             }
 
             tx.commit().await?;
         }
 
+        // Process dynamic rdeps first, as we must add new step dependencies for dynamically
+        // generated derivations
+        {
+            for rdep in item.step_info.step.clone_dyn_rdeps() {
+                let Some(dependent_step) = rdep.step.upgrade() else {
+                    continue;
+                };
+
+                let (resolved_drv, relation) =
+                    self.resolve_dynamic_input(drv_path, &rdep.relation).await?;
+
+                let Some(build) = direct.get(0) else {
+                    tracing::warn!("Finished step does not have associated build");
+                    continue;
+                };
+
+                // Create the actual step for the new derivation.
+                // finished_drvs is not necessary as it is only a memoization table to reduce
+                // checks if a dependency is finished from the database.
+                // new_steps is not necessary either as
+                let new_runnable: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>> = Default::default();
+                let new_step = match self
+                    .create_step(
+                        build.clone(),
+                        resolved_drv,
+                        None,
+                        Some((dependent_step.clone(), relation)),
+                        Default::default(),
+                        Default::default(),
+                        new_runnable.clone(),
+                    )
+                    .await
+                {
+                    CreateStepResult::None => continue,
+                    CreateStepResult::Valid(step) => step,
+                    CreateStepResult::PreviousFailure(step) => {
+                        if let Err(e) = self.handle_previous_failure(build.clone(), step).await {
+                            tracing::error!("Failed to handle previous failure: {e}");
+                        }
+                        // TODO: figure out what to do here
+                        continue;
+                    }
+                };
+
+                for r in new_runnable.read().iter() {
+                    r.make_runnable();
+                }
+
+                // create_step already added rdeps, but we need to add a forward dep as well
+                dependent_step.add_dep(new_step);
+            }
+        }
         item.step_info.step.make_rdeps_runnable();
 
         // always trigger dispatch, as we now might have a free machine again
