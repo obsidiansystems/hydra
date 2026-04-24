@@ -424,6 +424,8 @@ impl Connection {
             .next_back()
             .unwrap_or((0, drv_path));
 
+        eprintln!("resolved {} stages of {}",num_resolved, drv_path);
+
         Ok((new_drv_path.clone(), outputs[num_resolved..].into()))
     }
 

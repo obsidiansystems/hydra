@@ -453,6 +453,7 @@ impl Step {
             return;
         }
 
+        eprintln!("add_referring_data called");
         let mut state = self.state.write();
         if let Some(referring_build) = referring_build {
             state.builds.push(Arc::downgrade(referring_build));
@@ -464,6 +465,7 @@ impl Step {
                     .rdeps_len
                     .store(state.rdeps.len() as u64, Ordering::Relaxed);
             } else {
+                eprintln!("Adding dymamic reverse dep {referring_step:?}, {relation:?}");
                 state.dynamic_rdeps.push(DynamicReverseDep {
                     step: Arc::downgrade(referring_step),
                     relation,

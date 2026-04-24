@@ -505,6 +505,15 @@ impl State {
                     }
                 }
 
+                for rdep in step_info.step.clone_dyn_rdeps() {
+                    let Some(rdep_step) = rdep.step.upgrade() else {
+                        continue;
+                    };
+                    eprintln!("adding referring rdep step for {:?} {:?}", rdep_step, rdep.relation);
+                    rdep_step.remove_dep(&step_info.step);
+                    resolved_step.add_referring_data(None, Some((&rdep_step, rdep.relation)));
+                }
+
                 // Make the resolved step the new root of the build if the old
                 // unresolved step was previously the root.
                 if *build
