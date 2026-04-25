@@ -92,7 +92,8 @@ sub build_GET {
         my $path = ($build->buildoutputs)[0]->path or undef;
         my $cachedBuildStep = findBuildStepByOutPath($self, $c, $path);
         if (defined $cachedBuildStep) {
-            $c->stash->{cachedBuild} = $cachedBuildStep->build;
+            my $hist = $cachedBuildStep->buildstepshistorical;
+            $c->stash->{cachedBuild} = $hist ? $hist->build : undef;
             $c->stash->{cachedBuildStep} = $cachedBuildStep;
         }
     }
@@ -115,7 +116,7 @@ sub build_GET {
     # If this is an aggregate build, get its constituents.
     $c->stash->{constituents} = [$build->constituents_->search({}, {order_by => ["job"]})];
 
-    $c->stash->{steps} = [$build->buildsteps->search({}, {order_by => "stepnr desc"})];
+    $c->stash->{steps} = [$build->historical_build_steps->all];
 
     $c->stash->{binaryCachePublicUri} = $c->config->{binary_cache_public_uri};
 }

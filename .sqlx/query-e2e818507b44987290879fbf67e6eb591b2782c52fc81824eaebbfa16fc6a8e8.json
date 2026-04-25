@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO BuildStepCanCreate (drvPath, readyTime)\n            SELECT $1, $2\n            WHERE NOT EXISTS (\n                SELECT 1 FROM BuildStepDeps d\n                WHERE d.drvPath = $1\n                  AND NOT EXISTS (\n                    SELECT 1 FROM BuildSteps s\n                    WHERE s.drvPath = d.depDrvPath AND s.status = 0\n                  )\n            )\n            ON CONFLICT DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e2e818507b44987290879fbf67e6eb591b2782c52fc81824eaebbfa16fc6a8e8"
+}

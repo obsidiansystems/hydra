@@ -162,12 +162,10 @@ sub status_GET {
     my ($self, $c) = @_;
     $self->status_ok(
         $c,
-        entity => [$c->model('DB::Builds')->search(
-            { "buildsteps.busy" => { '!=', 0 } },
-            { order_by => ["globalpriority DESC", "id"],
-              join => "buildsteps",
-              columns => [@buildListColumns, 'buildsteps.drvpath', 'buildsteps.type']
-            })]
+        entity => [$c->model('DB::BuildSteps')->search(
+            { busy => { '!=', 0 } },
+            { order_by => ["attempt"] }
+        )]
     );
 }
 
@@ -269,8 +267,8 @@ sub prometheus :Local Args(0) {
 
     my $steps = dbh($c)->selectall_arrayref(
         "select machine, s.starttime as starttime " .
-        "from BuildSteps s join Builds b on s.build = b.id " .
-        "where busy != 0 order by machine, stepnr",
+        "from BuildSteps s " .
+        "where busy != 0 order by machine, s.attempt",
         { Slice => {} });
 
     foreach my $step (@$steps) {

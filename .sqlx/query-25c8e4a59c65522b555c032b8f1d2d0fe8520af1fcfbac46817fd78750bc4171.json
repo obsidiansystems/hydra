@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n              q.drvPath as \"drv_path!\",\n              q.readyTime as \"ready_time!: i32\",\n              COALESCE(prio.max_global, 0) as \"highest_global_priority!\",\n              COALESCE(prio.max_local, 0) as \"highest_local_priority!\",\n              COALESCE(prio.min_id, 2147483647) as \"lowest_build_id!\",\n              COALESCE(rdeps.cnt, 0) as \"rdeps_count!\"\n            FROM BuildStepCanCreate q\n            LEFT JOIN LATERAL (\n              WITH RECURSIVE all_rdeps AS (\n                SELECT drvPath FROM BuildStepDeps WHERE depDrvPath = q.drvPath\n                UNION\n                SELECT dep.drvPath FROM BuildStepDeps dep\n                JOIN all_rdeps r ON dep.depDrvPath = r.drvPath\n              )\n              SELECT\n                MAX(b.globalPriority) AS max_global,\n                MAX(b.priority) AS max_local,\n                MIN(b.id) AS min_id\n              FROM (SELECT drvPath FROM all_rdeps UNION ALL SELECT q.drvPath) all_paths\n              JOIN Builds b ON b.drvPath = all_paths.drvPath AND b.finished = 0\n            ) prio ON true\n            LEFT JOIN LATERAL (\n              SELECT COUNT(*) AS cnt FROM BuildStepDeps WHERE depDrvPath = q.drvPath\n            ) rdeps ON true\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "drv_path!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ready_time!: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "highest_global_priority!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "highest_local_priority!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "lowest_build_id!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "rdeps_count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "25c8e4a59c65522b555c032b8f1d2d0fe8520af1fcfbac46817fd78750bc4171"
+}

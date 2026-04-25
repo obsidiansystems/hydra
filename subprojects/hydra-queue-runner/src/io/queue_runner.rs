@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use hashbrown::HashMap;
-
-use super::{BuildQueueStats, Process};
+use super::Process;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,9 +13,7 @@ pub struct QueueRunnerStats {
 
     build_count: usize,
     jobset_count: usize,
-    step_count: usize,
-    runnable_count: usize,
-    queue_stats: HashMap<crate::state::System, BuildQueueStats>,
+    scheduled_count: usize,
 
     queue_checks_started: u64,
     queue_build_loads: u64,
@@ -70,17 +66,7 @@ impl QueueRunnerStats {
     pub async fn new(state: Arc<crate::state::State>) -> Self {
         let build_count = state.builds.len();
         let jobset_count = state.jobsets.len();
-        let step_count = state.steps.len();
-        let runnable_count = state.steps.len_runnable();
-        let queue_stats = {
-            state
-                .queues
-                .get_stats_per_queue()
-                .await
-                .into_iter()
-                .map(|(system, stats)| (system, stats.into()))
-                .collect()
-        };
+        let scheduled_count = state.queues.get_scheduled_count().await;
 
         state.metrics.refresh_dynamic_metrics(&state).await;
 
@@ -95,9 +81,7 @@ impl QueueRunnerStats {
             supported_features: state.machines.get_supported_features(),
             build_count,
             jobset_count,
-            step_count,
-            runnable_count,
-            queue_stats,
+            scheduled_count,
             queue_checks_started: state.metrics.queue_checks_started.get(),
             queue_build_loads: state.metrics.queue_build_loads.get(),
             queue_steps_created: state.metrics.queue_steps_created.get(),

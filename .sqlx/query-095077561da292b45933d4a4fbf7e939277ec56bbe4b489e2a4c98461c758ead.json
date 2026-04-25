@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO BuildStepCanCreate (drvPath, readyTime)\n            SELECT u.path, $2 FROM unnest($1::text[]) AS u(path)\n            WHERE NOT EXISTS (SELECT 1 FROM BuildStepDeps WHERE drvPath = u.path)\n            ON CONFLICT DO NOTHING\n            RETURNING drvPath as \"drvPath!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "drvPath!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "095077561da292b45933d4a4fbf7e939277ec56bbe4b489e2a4c98461c758ead"
+}

@@ -578,7 +578,7 @@ sub restartBuilds {
             { path => { -in => $builds->search({}, { join => "buildoutputs", select => "buildoutputs.path", as => "path", distinct => 1 })->as_query }
             })->delete;
         $cleared += $db->resultset('FailedPaths')->search(
-            { path => { -in => $builds->search_related("buildsteps")->search_related("buildstepoutputs", {}, { select => "buildstepoutputs.path", as => "path", distinct => 1 })->as_query }
+            { path => { -in => $builds->search_related("buildstepshistoricals")->search_related("buildstep")->search_related("buildstepoutputs", {}, { select => "buildstepoutputs.path", as => "path", distinct => 1 })->as_query }
             })->delete;
         print STDERR "cleared $cleared failed paths\n";
 

@@ -253,24 +253,18 @@ create table BuildOutputs (
 );
 
 
+create table Derivations (
+    path          text primary key not null
+);
+
+
 -- TODO: normalize this. Currently there can be multiple BuildSteps
 -- for a single step.
 create table BuildSteps (
-    build         integer not null,
-    -- The step number uniquely identifies the step within the build. Steps are
-    -- in an order consistent with the dependency order (i.e. need to
-    -- sucessfully build thing we depend on before things we do not.)
-    --
-    -- If we were designing Hydra from scratch today, we would likely not have
-    -- `build` and `stepnr` be part of this table, because `drvPath` and
-    -- `attempt` better reflects the way the current queue runner actually
-    -- works. We keep here, however, because historical jobs, and supporting
-    -- down-migrations.
-    stepnr        integer not null,
 
     type          integer not null, -- 0 = build, 1 = substitution
 
-    drvPath       text not null,
+    drvPath       text not null references Derivations(path),
     -- The attempt number uniquely identifies the step within the derivation.
     -- Note that the unique constraint using this disregardes the build (why we
     -- wanted to build this).
@@ -278,6 +272,7 @@ create table BuildSteps (
     -- This allows us to efficiently look at every time we tried to build a
     -- derivation.
     attempt       integer not null default 0,
+    check         (attempt >= 0),
 
     -- 0 = not busy
     -- 1 = building
@@ -309,12 +304,33 @@ create table BuildSteps (
     -- Whether this build step produced different results when repeated.
     isNonDeterministic boolean,
 
-    primary key   (build, stepnr),
-    unique        (drvPath, attempt),
-    check         (stepnr > 0),
-    check         (attempt >= 0),
-    foreign key   (build) references Builds(id) on delete cascade,
+    primary key   (drvPath, attempt),
     foreign key   (propagatedFrom) references Builds(id) on delete cascade
+);
+
+-- This is obselete by having the full graph data for new builds, but we would like to not loose the historical infor for old builds
+create table BuildStepsHistorical (
+    drvPath       text not null references Derivations(path),
+    attempt       integer not null default 0,
+
+    build         integer not null,
+    -- The step number uniquely identifies the step within the build. Steps are
+    -- in an order consistent with the dependency order (i.e. need to
+    -- sucessfully build thing we depend on before things we do not.)
+    --
+    -- If we were designing Hydra from scratch today, we would likely not have
+    -- `build` and `stepnr` be part of this table, because `drvPath` and
+    -- `attempt` better reflects the way the current queue runner actually
+    -- works. We keep here, however, because historical jobs, and supporting
+    -- down-migrations.
+    stepnr        integer not null,
+    check         (stepnr > 0),
+
+    primary key   (drvPath, attempt),
+    unique        (build, stepnr),
+
+    foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade,
+    foreign key   (build) references Builds(id) on delete cascade
 );
 
 
@@ -325,6 +341,23 @@ create table BuildStepOutputs (
     path          text,
     primary key   (drvPath, attempt, name),
     foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade
+);
+
+
+create table BuildStepDeps (
+    drvPath       text not null references Derivations(path) on delete cascade,
+    depDrvPath    text not null references Derivations(path) on delete cascade,
+    primary key   (drvPath, depDrvPath)
+);
+
+create index IndexBuildStepDepsByDep on BuildStepDeps(depDrvPath);
+
+
+-- Steps that are ready to be dispatched (all deps satisfied, not yet building).
+create table BuildStepCanCreate (
+    drvPath       text primary key not null references Derivations(path) on delete cascade,
+    -- TODO pre-reserve attempt number?!
+    readyTime     integer not null
 );
 
 

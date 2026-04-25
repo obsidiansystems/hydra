@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n              WITH ensure_drv AS (\n                INSERT INTO Derivations (path) VALUES ($1)\n                ON CONFLICT DO NOTHING\n              ),\n              new_attempt AS (SELECT COALESCE(MAX(attempt), -1) + 1 AS val FROM buildsteps WHERE drvPath = $1)\n              INSERT INTO buildsteps (\n                type,\n                drvPath,\n                attempt,\n                busy,\n                startTime,\n                stopTime,\n                system,\n                status,\n                propagatedFrom,\n                errorMsg,\n                machine\n              ) VALUES (\n                $2, $1, (SELECT val FROM new_attempt), $3, $4, $5, $6, $7, $8, $9, $10\n              )\n              ON CONFLICT DO NOTHING\n              RETURNING attempt AS \"attempt!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "attempt!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "58e5410638162f62e139449fe451eb0d31d17f97a5c2623dc06c899419e2ece8"
+}

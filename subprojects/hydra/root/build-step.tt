@@ -1,12 +1,15 @@
-[%
-  buildUrl = c.uri_for('/build', build.id);
-%]
-[% WRAPPER layout.tt
-  title="Attempt ${step.attempt} of " _ step.drvpath.remove('^.*/') _ " of job " _ makeNameTextForJob(build.jobset, job)
-  titleHTML="Attempt ${step.attempt}"
-           _ " of <tt>" _ step.drvpath.remove('^.*/') _ "</tt>"
-           _ " of job " _ linkToJob(build.jobset, job)
-%]
+[% IF build %]
+  [% buildUrl = c.uri_for('/build', build.id) %]
+  [% titleText = "Attempt ${step.attempt} of " _ step.drvpath.remove('^.*/') _ " of job " _ makeNameTextForJob(build.jobset, job) %]
+  [% titleHTML = "Attempt ${step.attempt}"
+               _ " of <tt>" _ step.drvpath.remove('^.*/') _ "</tt>"
+               _ " of job " _ linkToJob(build.jobset, job) %]
+[% ELSE %]
+  [% titleText = "Attempt ${step.attempt} of " _ step.drvpath.remove('^.*/') %]
+  [% titleHTML = "Attempt ${step.attempt}"
+               _ " of <tt>" _ step.drvpath.remove('^.*/') _ "</tt>" %]
+[% END %]
+[% WRAPPER layout.tt title=titleText titleHTML=titleHTML %]
 [% PROCESS common.tt %]
 [% PROCESS "build-common.tt" %]
 [% USE HTML %]
@@ -56,14 +59,19 @@
       <td>[% INCLUDE renderLogButtons url=logUrl %]</td>
     </tr>
   [% END %]
-  <tr>
-    <th>Build:</th>
-    <td>[% INCLUDE renderBuildIdLink id=step.get_column('build') %]</td>
-  </tr>
-  <tr>
-    <th>Step number:</th>
-    <td>[% step.stepnr %]</td>
-  </tr>
+  [% IF build %]
+    <tr>
+      <th>Build:</th>
+      <td><a [% HTML.attributes(href => buildUrl) %]>build [% build.id %]</a></td>
+    </tr>
+  [% END %]
+  [% hist = step.buildstepshistorical %]
+  [% IF hist %]
+    <tr>
+      <th>Legacy step number:</th>
+      <td>[% hist.stepnr %]</td>
+    </tr>
+  [% END %]
 </table>
 
 [% END %]

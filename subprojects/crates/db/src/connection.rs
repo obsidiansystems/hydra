@@ -119,11 +119,12 @@ impl Connection {
         sqlx::query_as!(
             BuildSteps,
             r#"
-            SELECT s.startTime, s.stopTime FROM buildsteps s join builds b on build = id
+            SELECT s.startTime, s.stopTime FROM buildsteps s
+            JOIN builds b ON b.drvPath = s.drvPath
             WHERE
               s.startTime IS NOT NULL AND
               to_timestamp(s.stopTime) > (NOW() - (interval '1 second' * $1)) AND
-              jobset_id = $2
+              b.jobset_id = $2
             "#,
             Some((scheduling_window * 10) as f64),
             jobset_id,
@@ -415,6 +416,107 @@ impl Connection {
                 .map(|v| v.status),
         )
     }
+
+    /// Check if a derivation path already exists in the Derivations table.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn derivation_exists(&mut self, drv_path: &str) -> sqlx::Result<bool> {
+        Ok(sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM Derivations WHERE path = $1) as "exists!""#,
+            drv_path,
+        )
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    /// Count the number of build steps for a given derivation path.
+    /// Used to determine retry count.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn count_build_steps_for_drv(&mut self, drv_path: &str) -> sqlx::Result<i64> {
+        Ok(sqlx::query_scalar!(
+            r#"SELECT COUNT(*) as "count!" FROM BuildSteps WHERE drvPath = $1"#,
+            drv_path,
+        )
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    /// Get all dispatch candidates from the ready queue, with scheduling
+    /// priority data computed via joins on `Builds` through `BuildStepDeps`.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_dispatch_candidates(
+        &mut self,
+    ) -> sqlx::Result<Vec<super::models::DispatchCandidate>> {
+        Ok(sqlx::query_as!(
+            super::models::DispatchCandidate,
+            r#"
+            SELECT
+              q.drvPath as "drv_path!",
+              q.readyTime as "ready_time!: i32",
+              COALESCE(prio.max_global, 0) as "highest_global_priority!",
+              COALESCE(prio.max_local, 0) as "highest_local_priority!",
+              COALESCE(prio.min_id, 2147483647) as "lowest_build_id!",
+              COALESCE(rdeps.cnt, 0) as "rdeps_count!"
+            FROM BuildStepCanCreate q
+            LEFT JOIN LATERAL (
+              WITH RECURSIVE all_rdeps AS (
+                SELECT drvPath FROM BuildStepDeps WHERE depDrvPath = q.drvPath
+                UNION
+                SELECT dep.drvPath FROM BuildStepDeps dep
+                JOIN all_rdeps r ON dep.depDrvPath = r.drvPath
+              )
+              SELECT
+                MAX(b.globalPriority) AS max_global,
+                MAX(b.priority) AS max_local,
+                MIN(b.id) AS min_id
+              FROM (SELECT drvPath FROM all_rdeps UNION ALL SELECT q.drvPath) all_paths
+              JOIN Builds b ON b.drvPath = all_paths.drvPath AND b.finished = 0
+            ) prio ON true
+            LEFT JOIN LATERAL (
+              SELECT COUNT(*) AS cnt FROM BuildStepDeps WHERE depDrvPath = q.drvPath
+            ) rdeps ON true
+            "#,
+        )
+        .fetch_all(&mut *self.conn)
+        .await?)
+    }
+
+    /// Get all builds that transitively depend on a step, via recursive CTE.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_dependent_builds(
+        &mut self,
+        drv_path: &str,
+    ) -> sqlx::Result<Vec<Build<String>>> {
+        sqlx::query_as!(
+            Build::<String>,
+            r#"
+            WITH RECURSIVE rdeps AS (
+              SELECT drvPath FROM BuildStepDeps WHERE depDrvPath = $1
+              UNION
+              SELECT d.drvPath FROM BuildStepDeps d
+              JOIN rdeps r ON d.depDrvPath = r.drvPath
+            )
+            SELECT
+              builds.id,
+              builds.jobset_id,
+              jobsets.project as project,
+              jobsets.name as jobset,
+              job,
+              builds.drvPath,
+              maxsilent,
+              timeout,
+              timestamp,
+              globalPriority,
+              priority
+            FROM Builds
+            INNER JOIN Jobsets ON builds.jobset_id = jobsets.id
+            WHERE builds.finished = 0
+              AND builds.drvPath IN (SELECT drvPath FROM rdeps UNION ALL SELECT $1)
+            "#,
+            drv_path,
+        )
+        .fetch_all(&mut *self.conn)
+        .await
+    }
 }
 
 impl Transaction<'_> {
@@ -546,12 +648,13 @@ impl Transaction<'_> {
         let path = store_dir.display(path).to_string();
         Ok(sqlx::query!(
             r#"
-            SELECT build FROM buildsteps
-            WHERE drvPath = $1
-              AND startTime != 0
-              AND stopTime != 0
-              AND status = 1
-            ORDER BY attempt DESC LIMIT 1
+            SELECT b.id AS build FROM buildsteps s
+            JOIN builds b ON b.drvPath = s.drvPath
+            WHERE s.drvPath = $1
+              AND s.startTime != 0
+              AND s.stopTime != 0
+              AND s.status = 1
+            ORDER BY s.attempt DESC LIMIT 1
             "#,
             path.as_str(),
         )
@@ -569,10 +672,11 @@ impl Transaction<'_> {
         let path = store_dir.display(path).to_string();
         Ok(sqlx::query!(
             r#"
-            SELECT s.build FROM buildsteps s
+            SELECT b.id AS build FROM buildsteps s
             JOIN BuildStepOutputs o
               ON s.drvPath = o.drvPath
               AND s.attempt = o.attempt
+            JOIN builds b ON b.drvPath = s.drvPath
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -596,10 +700,11 @@ impl Transaction<'_> {
         let drv_path = store_dir.display(drv_path).to_string();
         Ok(sqlx::query!(
             r#"
-            SELECT s.build FROM buildsteps s
+            SELECT b.id AS build FROM buildsteps s
             JOIN BuildStepOutputs o
               ON s.drvPath = o.drvPath
               AND s.attempt = o.attempt
+            JOIN builds b ON b.drvPath = s.drvPath
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -620,16 +725,16 @@ impl Transaction<'_> {
         &mut self,
         store_dir: &StoreDir,
         step: InsertBuildStep<'_>,
-    ) -> sqlx::Result<Option<(i32, i32)>> {
+    ) -> sqlx::Result<Option<i32>> {
         let drv_path = store_dir.display(step.drv_path).to_string();
         let success = sqlx::query!(
             r#"
-              WITH
-                new_stepnr AS (SELECT COALESCE(MAX(stepnr), 0) + 1 AS val FROM buildsteps WHERE build = $1),
-                new_attempt AS (SELECT COALESCE(MAX(attempt), -1) + 1 AS val FROM buildsteps WHERE drvPath = $3)
+              WITH ensure_drv AS (
+                INSERT INTO Derivations (path) VALUES ($1)
+                ON CONFLICT DO NOTHING
+              ),
+              new_attempt AS (SELECT COALESCE(MAX(attempt), -1) + 1 AS val FROM buildsteps WHERE drvPath = $1)
               INSERT INTO buildsteps (
-                build,
-                stepnr,
                 type,
                 drvPath,
                 attempt,
@@ -642,14 +747,13 @@ impl Transaction<'_> {
                 errorMsg,
                 machine
               ) VALUES (
-                $1, (SELECT val FROM new_stepnr), $2, $3, (SELECT val FROM new_attempt), $4, $5, $6, $7, $8, $9, $10, $11
+                $2, $1, (SELECT val FROM new_attempt), $3, $4, $5, $6, $7, $8, $9, $10
               )
               ON CONFLICT DO NOTHING
-              RETURNING stepnr, attempt AS "attempt!"
+              RETURNING attempt AS "attempt!"
             "#,
-            step.build_id,
-            step.r#type as i32,
             drv_path.as_str(),
+            step.r#type as i32,
             i32::from(step.busy),
             step.start_time,
             step.stop_time,
@@ -665,7 +769,7 @@ impl Transaction<'_> {
         )
         .fetch_optional(&mut *self.tx)
         .await?
-        .map(|v| (v.stepnr, v.attempt));
+        .map(|v| v.attempt);
         Ok(success)
     }
 
@@ -776,8 +880,9 @@ impl Transaction<'_> {
         let drv_path = store_dir.display(drv_path).to_string();
         Ok(sqlx::query!(
             r#"
-            SELECT build FROM buildsteps
-            WHERE drvPath = $1 AND attempt = $2
+            SELECT b.id AS build FROM buildsteps s
+            JOIN builds b ON b.drvPath = s.drvPath
+            WHERE s.drvPath = $1 AND s.attempt = $2
             "#,
             drv_path.as_str(),
             attempt,
@@ -914,7 +1019,6 @@ impl Transaction<'_> {
         skip(
             self,
             start_time,
-            build_id,
             platform,
             machine,
             status,
@@ -927,7 +1031,6 @@ impl Transaction<'_> {
         &mut self,
         store_dir: &StoreDir,
         start_time: Option<i32>,
-        build_id: BuildID,
         drv_path: &StorePath,
         platform: Option<&str>,
         machine: String,
@@ -941,7 +1044,6 @@ impl Transaction<'_> {
                 .insert_build_step(
                     store_dir,
                     InsertBuildStep {
-                        build_id,
                         r#type: crate::models::BuildType::Build,
                         drv_path,
                         status,
@@ -960,7 +1062,7 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids.1;
+                break ids;
             }
         };
 
@@ -987,7 +1089,7 @@ impl Transaction<'_> {
     }
 
     #[tracing::instrument(
-        skip(self, start_time, stop_time, build_id, drv_path, output,),
+        skip(self, start_time, stop_time, drv_path, output,),
         err,
         ret
     )]
@@ -996,7 +1098,6 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         start_time: i32,
         stop_time: i32,
-        build_id: BuildID,
         drv_path: &StorePath,
         output: (OutputName, Option<StorePath>),
     ) -> anyhow::Result<i32> {
@@ -1005,7 +1106,6 @@ impl Transaction<'_> {
                 .insert_build_step(
                     store_dir,
                     InsertBuildStep {
-                        build_id,
                         r#type: crate::models::BuildType::Substitution,
                         drv_path,
                         status: BuildStatus::Success,
@@ -1020,7 +1120,7 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids.1;
+                break ids;
             }
         };
 
@@ -1129,6 +1229,183 @@ impl Transaction<'_> {
         .await?;
         Ok(())
     }
+
+    /// Ensure a derivation path exists in the `Derivations` table.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn ensure_derivation_path(&mut self, drv_path: &str) -> sqlx::Result<()> {
+        sqlx::query!(
+            "INSERT INTO Derivations (path) VALUES ($1) ON CONFLICT DO NOTHING",
+            drv_path,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Insert a single dependency edge.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn insert_step_dep(
+        &mut self,
+        drv_path: &str,
+        dep_drv_path: &str,
+    ) -> sqlx::Result<()> {
+        sqlx::query!(
+            r#"
+            WITH ensure_drv AS (
+                INSERT INTO Derivations (path) VALUES ($1)
+                ON CONFLICT DO NOTHING
+            ),
+            ensure_dep AS (
+                INSERT INTO Derivations (path) VALUES ($2)
+                ON CONFLICT DO NOTHING
+            )
+            INSERT INTO BuildStepDeps (drvPath, depDrvPath) VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            "#,
+            drv_path,
+            dep_drv_path,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Batch-insert dependency edges for a single step.
+    #[tracing::instrument(skip(self, dep_drv_paths), err)]
+    pub async fn insert_step_deps(
+        &mut self,
+        drv_path: &str,
+        dep_drv_paths: &[&str],
+    ) -> sqlx::Result<()> {
+        if dep_drv_paths.is_empty() {
+            return Ok(());
+        }
+
+        // Ensure all drvPaths exist in DerivationPaths
+        let all_paths: Vec<&str> = std::iter::once(drv_path)
+            .chain(dep_drv_paths.iter().copied())
+            .collect();
+        let mut query_builder = sqlx::QueryBuilder::new("INSERT INTO Derivations (path) ");
+        query_builder.push_values(&all_paths, |mut b, path| {
+            b.push_bind(*path);
+        });
+        query_builder.push(" ON CONFLICT DO NOTHING");
+        query_builder.build().execute(&mut *self.tx).await?;
+
+        // Insert the dependency edges
+        let mut query_builder =
+            sqlx::QueryBuilder::new("INSERT INTO BuildStepDeps (drvPath, depDrvPath) ");
+        query_builder.push_values(dep_drv_paths, |mut b, dep| {
+            b.push_bind(drv_path).push_bind(*dep);
+        });
+        query_builder.push(" ON CONFLICT DO NOTHING");
+        query_builder.build().execute(&mut *self.tx).await?;
+
+        Ok(())
+    }
+
+    /// Insert a step into the ready queue (`BuildStepCanCreate`).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn mark_step_ready(&mut self, drv_path: &str, ready_time: i32) -> sqlx::Result<()> {
+        sqlx::query!(
+            "INSERT INTO BuildStepCanCreate (drvPath, readyTime) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            drv_path,
+            ready_time,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark a step as ready if all its deps are satisfied (have a successful BuildSteps row).
+    /// If the step has no deps, it's unconditionally ready.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn mark_step_ready_if_deps_satisfied(
+        &mut self,
+        drv_path: &str,
+        ready_time: i32,
+    ) -> sqlx::Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO BuildStepCanCreate (drvPath, readyTime)
+            SELECT $1, $2
+            WHERE NOT EXISTS (
+                SELECT 1 FROM BuildStepDeps d
+                WHERE d.drvPath = $1
+                  AND NOT EXISTS (
+                    SELECT 1 FROM BuildSteps s
+                    WHERE s.drvPath = d.depDrvPath AND s.status = 0
+                  )
+            )
+            ON CONFLICT DO NOTHING
+            "#,
+            drv_path,
+            ready_time,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a step from the ready queue (when dispatched).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn unmark_step_ready(&mut self, drv_path: &str) -> sqlx::Result<()> {
+        sqlx::query!(
+            "DELETE FROM BuildStepCanCreate WHERE drvPath = $1",
+            drv_path,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a finished step from all dependency sets and insert
+    /// any newly-ready steps into `BuildStepCanCreate`.
+    /// Returns the drvPaths that became ready.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn make_rdeps_runnable(
+        &mut self,
+        dep_drv_path: &str,
+        ready_time: i32,
+    ) -> sqlx::Result<Vec<String>> {
+        // 1. Remove this step from all dep edges, get affected dependents
+        let affected: Vec<String> = sqlx::query!(
+            "DELETE FROM BuildStepDeps WHERE depDrvPath = $1 RETURNING drvPath",
+            dep_drv_path,
+        )
+        .fetch_all(&mut *self.tx)
+        .await?
+        .into_iter()
+        .map(|r| r.drvpath)
+        .collect();
+
+        if affected.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. Insert newly-ready steps (those with zero remaining deps) into ready queue
+        let newly_ready: Vec<String> = sqlx::query!(
+            r#"
+            INSERT INTO BuildStepCanCreate (drvPath, readyTime)
+            SELECT u.path, $2 FROM unnest($1::text[]) AS u(path)
+            WHERE NOT EXISTS (SELECT 1 FROM BuildStepDeps WHERE drvPath = u.path)
+            ON CONFLICT DO NOTHING
+            RETURNING drvPath as "drvPath!"
+            "#,
+            &affected,
+            ready_time,
+        )
+        .fetch_all(&mut *self.tx)
+        .await?
+        .into_iter()
+        .map(|r| r.drvPath)
+        .collect();
+
+        Ok(newly_ready)
+    }
+
+    // Derivations are permanent records — no delete_derivation method.
+    // Whether a dep is satisfied is derived by joining to BuildSteps.
 }
 
 impl Transaction<'_> {

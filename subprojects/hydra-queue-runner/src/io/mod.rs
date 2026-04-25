@@ -16,7 +16,7 @@ pub use response_types::{
     BuildsResponse, DumpResponse, JobsetsResponse, MachinesResponse, QueueResponse,
     StepInfoResponse, StepsResponse,
 };
-pub use stats::{BuildQueueStats, CgroupStats, CpuStats, IoStats, MemoryStats, Process};
+pub use stats::{CgroupStats, CpuStats, IoStats, MemoryStats, Process};
 pub use step::Step;
 pub use step_info::StepInfo;
 pub use uploads::UploadsResponse;

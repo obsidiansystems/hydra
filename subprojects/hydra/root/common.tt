@@ -145,7 +145,7 @@ BLOCK renderBuildListBody;
         <td>
           <a [% HTML.attributes(href => link) %]>[% IF !hideJobsetName %][% HTML.escape(build.jobset.get_column("project")) %]:[% HTML.escape(build.jobset.get_column("name")) %]:[% END %][% HTML.escape(build.get_column("job")) %]</a>
           [% IF showStepName %]
-            [% INCLUDE renderDrvInfo step=build.buildsteps releasename=build.nixname %]
+            <tt>[% build.drvpath.match('-(.*).drv').0 %]</tt>
           [% END %]
         </td>
       [% END %]

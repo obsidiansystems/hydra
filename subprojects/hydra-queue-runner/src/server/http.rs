@@ -139,10 +139,10 @@ async fn router(
                 handler::status::builds(state)
             }
             (&hyper::Method::GET, "/status/steps" | "/status/steps/") => {
-                handler::status::steps(state)
+                handler::status::steps(state).await
             }
             (&hyper::Method::GET, "/status/runnable" | "/status/runnable/") => {
-                handler::status::runnable(state)
+                handler::status::runnable(state).await
             }
             (&hyper::Method::GET, "/status/queues" | "/status/queues/") => {
                 handler::status::queues(state).await
@@ -258,54 +258,70 @@ mod handler {
         }
 
         #[tracing::instrument(skip(state), err)]
-        pub(crate) fn steps(state: std::sync::Arc<State>) -> Result<Response, Error> {
-            let steps = state.steps.clone_as_io();
+        pub(crate) async fn steps(state: std::sync::Arc<State>) -> Result<Response, Error> {
+            // Steps now live in the DB; query dispatch candidates
+            let steps: Vec<io::Step> = match state.db.get().await {
+                Ok(mut conn) => conn
+                    .get_dispatch_candidates()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                Err(_) => vec![],
+            };
             construct_json_ok_response(&io::StepsResponse::new(steps))
         }
 
         #[tracing::instrument(skip(state), err)]
-        pub(crate) fn runnable(state: std::sync::Arc<State>) -> Result<Response, Error> {
-            let steps = state.steps.clone_runnable_as_io();
+        pub(crate) async fn runnable(state: std::sync::Arc<State>) -> Result<Response, Error> {
+            // Same as steps now -- all candidates are runnable
+            let steps: Vec<io::Step> = match state.db.get().await {
+                Ok(mut conn) => conn
+                    .get_dispatch_candidates()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                Err(_) => vec![],
+            };
             construct_json_ok_response(&io::StepsResponse::new(steps))
         }
 
         #[tracing::instrument(skip(state), err)]
         pub(crate) async fn queues(state: std::sync::Arc<State>) -> Result<Response, Error> {
-            let queues = state
+            let scheduled: Vec<io::StepInfo> = state
                 .queues
-                .clone_inner()
-                .await
-                .into_iter()
-                .map(|(s, q)| {
-                    (
-                        s,
-                        q.clone_inner()
-                            .into_iter()
-                            .filter_map(|v| v.upgrade().map(Into::into))
-                            .collect(),
-                    )
-                })
-                .collect();
-            construct_json_ok_response(&io::QueueResponse::new(queues))
-        }
-
-        #[tracing::instrument(skip(state), err)]
-        pub(crate) async fn queue_jobs(state: std::sync::Arc<State>) -> Result<Response, Error> {
-            let stepinfos = state
-                .queues
-                .get_jobs()
+                .get_scheduled()
                 .await
                 .into_iter()
                 .map(Into::into)
                 .collect();
-            construct_json_ok_response(&io::StepInfoResponse::new(stepinfos))
+            construct_json_ok_response(&io::QueueResponse::new(scheduled))
+        }
+
+        #[tracing::instrument(skip(state), err)]
+        pub(crate) async fn queue_jobs(state: std::sync::Arc<State>) -> Result<Response, Error> {
+            // With DB-based queues, "jobs" are the dispatch candidates
+            let steps: Vec<io::Step> = match state.db.get().await {
+                Ok(mut conn) => conn
+                    .get_dispatch_candidates()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                Err(_) => vec![],
+            };
+            construct_json_ok_response(&io::StepsResponse::new(steps))
         }
 
         #[tracing::instrument(skip(state), err)]
         pub(crate) async fn queue_scheduled(
             state: std::sync::Arc<State>,
         ) -> Result<Response, Error> {
-            let stepinfos = state
+            let stepinfos: Vec<io::StepInfo> = state
                 .queues
                 .get_scheduled()
                 .await

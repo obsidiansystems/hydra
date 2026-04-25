@@ -402,11 +402,8 @@ impl Machines {
         inner.by_uuid.get(&machine_id).cloned()
     }
 
-    pub fn support_step(&self, s: &Arc<super::Step>) -> bool {
-        let Some(system) = s.get_system() else {
-            return false;
-        };
-        self.get_machine_for_system(&system, &s.get_required_features(), None)
+    pub fn support_system(&self, system: &str, required_features: &[String]) -> bool {
+        self.get_machine_for_system(system, required_features, None)
             .is_some()
     }
 
@@ -417,7 +414,7 @@ impl Machines {
         required_features: &[String],
         free_fn: Option<MachineFreeFn>,
     ) -> Option<Arc<Machine>> {
-        // dup of machines.support_step
+        // dup of machines.support_system
         let inner = self.inner.read();
         if system == "builtin" {
             inner

@@ -5,8 +5,7 @@ mod inspectable_channel;
 mod jobset;
 mod machine;
 mod metrics;
-mod queue;
-mod step;
+pub mod queue;
 mod step_info;
 mod uploader;
 
@@ -14,9 +13,8 @@ pub use atomic::AtomicDateTime;
 pub use build::{Build, BuildOutput, BuildResultState, BuildTimings, Builds, RemoteBuild};
 pub use jobset::{Jobset, JobsetID, Jobsets};
 pub use machine::{Machine, Message as MachineMessage, Pressure, Stats as MachineStats};
-pub use queue::{BuildQueueStats, Queues};
-pub use step::{Step, Steps};
-pub use step_info::StepInfo;
+pub use queue::Queues;
+pub use step_info::DispatchEntry;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -40,16 +38,11 @@ pub type System = String;
 
 enum CreateStepResult {
     None,
-    Valid(Arc<Step>),
-    PreviousFailure(Arc<Step>),
+    Valid(nix_utils::StorePath),
+    PreviousFailure(nix_utils::StorePath),
 }
 
-enum RealiseStepResult {
-    None,
-    Valid(Arc<Machine>),
-    MaybeCancelled,
-    CachedFailure,
-}
+// No longer used publicly; dispatch is done differently now.
 
 #[allow(missing_debug_implementations)]
 pub enum RemoteStoreBackend {
@@ -71,7 +64,6 @@ pub struct State {
 
     pub builds: Builds,
     pub jobsets: Jobsets,
-    pub steps: Steps,
     pub queues: Queues,
 
     pub fod_checker: Option<Arc<FodChecker>>,
@@ -129,7 +121,6 @@ impl State {
             log_dir,
             builds: Builds::new(),
             jobsets: Jobsets::new(),
-            steps: Steps::new(),
             queues: Queues::new(),
             fod_checker: if config.get_enable_fod_checker() {
                 Some(Arc::new(FodChecker::new(None)))
@@ -158,7 +149,7 @@ impl State {
 
         let curr_db_url = self.config.get_db_url();
         let curr_machine_sort_fn = self.config.get_machine_sort_fn();
-        let curr_step_sort_fn = self.config.get_step_sort_fn();
+        let _curr_step_sort_fn = self.config.get_step_sort_fn();
         let curr_remote_stores = self.config.get_remote_store_addrs();
         let curr_enable_fod_checker = self.config.get_enable_fod_checker();
         let mut new_remote_stores = vec![];
@@ -183,9 +174,8 @@ impl State {
         if curr_machine_sort_fn != new_config.machine_sort_fn {
             self.machines.sort(new_config.machine_sort_fn);
         }
-        if curr_step_sort_fn != new_config.step_sort_fn {
-            self.queues.sort_queues(curr_step_sort_fn).await;
-        }
+        // Step sort fn is now applied at dispatch time from DB query results;
+        // no in-memory queue to re-sort.
         if curr_remote_stores != new_config.remote_store_addr {
             *self.remote_stores.write() = new_remote_stores;
         }
@@ -207,12 +197,6 @@ impl State {
 
     #[tracing::instrument(skip(self, machine))]
     pub async fn insert_machine(&self, machine: Machine) -> uuid::Uuid {
-        if !machine.systems.is_empty() {
-            self.queues
-                .ensure_queues_for_systems(&machine.systems)
-                .await;
-        }
-
         let machine_id = self
             .machines
             .insert_machine(machine, self.config.get_machine_sort_fn());
@@ -261,75 +245,53 @@ impl State {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, constraint), err)]
+    #[tracing::instrument(skip(self, entry, machine), fields(drv=%entry.drv_path), err)]
     #[allow(clippy::too_many_lines)]
     async fn realise_drv_on_valid_machine(
         self: Arc<Self>,
-        constraint: queue::JobConstraint,
-    ) -> anyhow::Result<RealiseStepResult> {
-        let free_fn = self.config.get_machine_free_fn();
-
-        let Some((machine, step_info)) = constraint.resolve(&self.machines, free_fn) else {
-            return Ok(RealiseStepResult::None);
-        };
-        let drv = step_info.step.get_drv_path();
+        entry: &DispatchEntry,
+        machine: Arc<Machine>,
+    ) -> anyhow::Result<bool> {
+        let drv = &entry.drv_path;
+        let drv_path_str = self.store.print_store_path(drv);
         let mut build_options = nix_utils::BuildOptions::new(None);
 
-        let build_id = {
-            let mut dependents = HashSet::new();
-            let mut steps = HashSet::new();
-            step_info.step.get_dependents(&mut dependents, &mut steps);
-
-            if dependents.is_empty() {
-                // Apparently all builds that depend on this derivation are gone (e.g. cancelled). So
-                // don't bother. This is very unlikely to happen, because normally Steps are only kept
-                // alive by being reachable from a Build. However, it's possible that a new Build just
-                // created a reference to this step. So to handle that possibility, we retry this step
-                // (putting it back in the runnable queue). If there are really no strong pointers to
-                // the step, it will be deleted.
-                tracing::info!("maybe cancelling build step {drv}");
-                return Ok(RealiseStepResult::MaybeCancelled);
-            }
-
-            // TODO someday we will drop the build ID from the build step table,
-            // and then this will not be necessary. Rather than caching "an
-            // arbitrary build build is reachable from this graph?" we will
-            // simply have the graph in the database, and anyone that is
-            // currious can look up that information themselves.
-            //
-            // I, @Ericson2314, suspect that no one needs that information. And
-            // thus it is not worth caching.
-            //
-            // (it could be used for scheduilng, but it is not very good for
-            // scheduling, since the build chosen is arbitrary among the
-            // reachable ones).
-            let Some(build) = dependents
-                .iter()
-                .find(|b| &b.drv_path == drv)
-                .or_else(|| dependents.iter().next())
-            else {
-                // this should never happen, as we checked is_empty above and fallback is just any build
-                return Ok(RealiseStepResult::MaybeCancelled);
-            };
-
-            // We want the biggest timeout otherwise we could build a step like llvm with a timeout
-            // of 180 because a nixostest with a timeout got scheduled and needs this step
-            let biggest_max_silent_time = dependents.iter().map(|x| x.max_silent_time).max();
-            let biggest_build_timeout = dependents.iter().map(|x| x.timeout).max();
-
-            build_options
-                .set_max_silent_time(biggest_max_silent_time.unwrap_or(build.max_silent_time));
-            build_options.set_build_timeout(biggest_build_timeout.unwrap_or(build.timeout));
-            build.id
+        // Get dependent builds from DB
+        let dependents = {
+            let mut conn = self.db.get().await?;
+            conn.get_dependent_builds(&drv_path_str).await?
         };
 
-        let mut job = machine::Job::new(drv.to_owned(), step_info.resolved_drv_path.clone());
+        if dependents.is_empty() {
+            tracing::info!("maybe cancelling build step {drv} - no dependents");
+            if let Ok(mut conn) = self.db.get().await {
+                if let Ok(mut tx) = conn.begin_transaction().await {
+                    let _ = tx.unmark_step_ready(&drv_path_str).await;
+                    let _ = tx.commit().await;
+                }
+            }
+            return Ok(false);
+        }
+
+        let build = dependents
+            .iter()
+            .find(|b| b.drvpath == drv_path_str)
+            .or_else(|| dependents.first())
+            .unwrap(); // safe: checked is_empty above
+
+        let biggest_max_silent_time = dependents.iter().map(|x| x.maxsilent.unwrap_or(3600)).max();
+        let biggest_build_timeout = dependents.iter().map(|x| x.timeout.unwrap_or(36000)).max();
+
+        build_options.set_max_silent_time(biggest_max_silent_time.unwrap_or(3600));
+        build_options.set_build_timeout(biggest_build_timeout.unwrap_or(36000));
+        let mut job = machine::Job::new(drv.to_owned(), entry.resolved_drv_path.clone());
         job.result.set_start_time_now();
-        if self.check_cached_failure(step_info.step.clone()).await {
+
+        // Check cached failure
+        if self.check_cached_failure_by_drv(drv).await {
             job.result.step_status = BuildStatus::CachedFailure;
-            self.inner_fail_job(drv, None, job, step_info.step.clone())
-                .await?;
-            return Ok(RealiseStepResult::CachedFailure);
+            self.inner_fail_job_by_drv(drv, None, job).await?;
+            return Ok(false);
         }
 
         self.construct_log_file_path(drv)
@@ -337,6 +299,16 @@ impl State {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("failed to construct log path string."))?
             .clone_into(&mut job.result.log_file);
+
+        // Parse the derivation to get system and output paths for the build step
+        let drv_parsed = nix_utils::query_drv(&self.store, drv)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("derivation not found when dispatching: {drv}"))?;
+        let system_str = std::str::from_utf8(&drv_parsed.platform)
+            .expect("platform must be valid UTF-8")
+            .to_owned();
+        let output_paths = nix_utils::output_paths(&drv_parsed, self.store.store_dir());
+
         let mut db = self.db.get().await?;
         let attempt = {
             let mut tx = db.begin_transaction().await?;
@@ -345,21 +317,18 @@ impl State {
                 .create_build_step(
                     self.store.store_dir(),
                     Some(job.result.get_start_time_as_i32()?),
-                    build_id,
-                    step_info.step.get_drv_path(),
-                    step_info.step.get_system().as_deref(),
+                    drv,
+                    Some(&system_str),
                     machine.hostname.clone(),
                     BuildStatus::Busy,
                     None,
                     None,
-                    step_info
-                        .step
-                        .get_output_paths(self.store.store_dir())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect(),
+                    output_paths.clone(),
                 )
                 .await?;
+
+            // Remove from BuildStepCanCreate now that we've dispatched
+            tx.unmark_step_ready(&drv_path_str).await?;
             tx.commit().await?;
             attempt
         };
@@ -367,11 +336,11 @@ impl State {
 
         {
             let mut tx = db.begin_transaction().await?;
-            tx.notify_build_started(build_id).await?;
+            tx.notify_build_started(build.id).await?;
             tx.commit().await?;
         }
         tracing::info!(
-            "Submitting build drv={drv} on machine={} hostname={} build_id={build_id} attempt={attempt}",
+            "Submitting build drv={drv} on machine={} hostname={} attempt={attempt}",
             machine.id,
             machine.hostname
         );
@@ -381,17 +350,26 @@ impl State {
             .update_build_step(
                 self.store.store_dir(),
                 db::models::UpdateBuildStep {
-                    drv_path: step_info.step.get_drv_path(),
+                    drv_path: drv,
                     attempt,
                     status: db::models::StepStatus::Connecting,
                 },
             )
             .await?;
+
+        // Add to scheduled map
+        self.queues
+            .add_job_to_scheduled(queue::ScheduledItem {
+                drv_path: drv.to_owned(),
+                resolved_drv_path: entry.resolved_drv_path.clone(),
+                machine: machine.clone(),
+            })
+            .await;
+
         machine
             .build_drv(
                 job,
                 &build_options,
-                // TODO: cleanup
                 if self.config.use_presigned_uploads() {
                     let remote_stores = self.remote_stores.read();
                     remote_stores.iter().find_map(|s| match s {
@@ -407,7 +385,7 @@ impl State {
             .await?;
         self.metrics.nr_steps_started.inc();
         self.metrics.nr_steps_building.add(1);
-        Ok(RealiseStepResult::Valid(machine))
+        Ok(true)
     }
 
     #[tracing::instrument(skip(self), fields(%drv), err)]
@@ -459,7 +437,6 @@ impl State {
                 continue;
             };
 
-            let new_runnable = Arc::new(parking_lot::RwLock::new(HashSet::<Arc<Step>>::new()));
             let nr_added: Arc<AtomicI64> = Arc::new(0.into());
             let now = Instant::now();
 
@@ -469,27 +446,14 @@ impl State {
                 new_builds_by_id.clone(),
                 &new_builds_by_path,
                 finished_drvs.clone(),
-                new_runnable.clone(),
             ))
             .await;
 
-            // we should never run into this issue
             #[allow(clippy::cast_possible_truncation)]
             self.metrics
                 .build_read_time_ms
                 .inc_by(now.elapsed().as_millis() as u64);
 
-            {
-                let new_runnable = new_runnable.read();
-                tracing::info!(
-                    "got {} new runnable steps from {} new builds",
-                    new_runnable.len(),
-                    nr_added.load(Ordering::Relaxed)
-                );
-                for r in new_runnable.iter() {
-                    r.make_runnable();
-                }
-            }
             if let Ok(added_u64) = u64::try_from(nr_added.load(Ordering::Relaxed)) {
                 self.metrics.nr_builds_read.inc_by(added_u64);
             }
@@ -503,12 +467,6 @@ impl State {
             }
         }
 
-        // This is here to ensure that we dont have any deps to finished steps
-        // This can happen because step creation is async and is_new can return a step that is
-        // still undecided if its finished or not.
-        self.steps.make_rdeps_runnable();
-
-        // we can just always trigger dispatch as we might have a free machine and its cheap
         self.metrics.queue_checks_finished.inc();
         self.trigger_dispatch();
         if let Some(fod_checker) = &self.fod_checker {
@@ -527,7 +485,7 @@ impl State {
             .collect();
         self.builds.update_priorities(&curr_ids);
 
-        let cancelled_steps = self.queues.kill_active_steps().await;
+        let cancelled_steps = self.queues.kill_active_steps(&self.db).await;
         for (drv_path, machine_id) in cancelled_steps {
             if let Err(e) = self
                 .fail_step(
@@ -952,53 +910,127 @@ impl State {
     async fn do_dispatch_once(self: Arc<Self>) {
         // Prune old historical build step info from the jobsets.
         self.jobsets.prune();
-        let new_runnable = self.steps.clone_runnable();
 
-        let now = jiff::Timestamp::now();
-        let mut new_queues = HashMap::<System, Vec<StepInfo>>::with_capacity(10);
-        for r in new_runnable {
-            let Some(system) = r.get_system() else {
+        // Query all dispatch candidates from the DB
+        let candidates = match self.db.get().await {
+            Ok(mut conn) => match conn.get_dispatch_candidates().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Failed to get dispatch candidates: {e}");
+                    return;
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to get DB connection for dispatch: {e}");
+                return;
+            }
+        };
+
+        let free_fn = self.config.get_machine_free_fn();
+        let sort_fn = self.config.get_step_sort_fn();
+
+        // Build DispatchEntry for each candidate
+        let mut entries = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            // Parse derivation to get system + required_features
+            let store_dir = self.store.store_dir();
+            let drv_path = match store_dir.parse(&candidate.drv_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse store path from dispatch candidate `{}`: {e}",
+                        candidate.drv_path
+                    );
+                    continue;
+                }
+            };
+            let Some(drv) = nix_utils::query_drv(&self.store, &drv_path)
+                .await
+                .ok()
+                .flatten()
+            else {
+                tracing::warn!("Failed to read derivation for dispatch candidate: {drv_path}");
                 continue;
             };
-            if r.atomic_state.tries.load(Ordering::Relaxed) > 0 {
-                continue;
-            }
-            let step_info = StepInfo::new(&self.store, &self.db, r.clone()).await;
+            let system = std::str::from_utf8(&drv.platform)
+                .expect("platform must be valid UTF-8")
+                .to_owned();
+            let required_features = drv
+                .env
+                .get(b"requiredSystemFeatures".as_slice())
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .map(|v| {
+                    v.split(' ')
+                        .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
 
-            new_queues
-                .entry(system)
-                .or_insert_with(|| Vec::with_capacity(100))
-                .push(step_info);
+            // Compute lowest_share_used from jobsets
+            // TODO: this is approximate since we don't track step->jobset mapping in the DB yet
+            let lowest_share_used = 1e9_f64;
+
+            // Try to resolve CA derivation
+            let resolved_drv_path =
+                match step_info::try_resolve(self.store.store_dir(), &self.db, &drv).await {
+                    Some(ref basic_drv) => self.store.write_derivation(basic_drv).await.ok(),
+                    None => None,
+                };
+
+            entries.push(DispatchEntry {
+                drv_path,
+                resolved_drv_path,
+                system,
+                required_features,
+                ready_time: candidate.ready_time,
+                highest_global_priority: candidate.highest_global_priority,
+                highest_local_priority: candidate.highest_local_priority,
+                lowest_build_id: candidate.lowest_build_id,
+                rdeps_count: candidate.rdeps_count,
+                lowest_share_used,
+            });
         }
 
-        for (system, jobs) in new_queues {
-            self.queues
-                .insert_new_jobs(
-                    system,
-                    jobs,
-                    &now,
-                    self.config.get_step_sort_fn(),
-                    &self.metrics,
-                )
-                .await;
-        }
-        self.queues.remove_all_weak_pointer().await;
+        // Sort entries by scheduling priority
+        let cmp_fn = match sort_fn {
+            crate::config::StepSortFn::Legacy => DispatchEntry::legacy_compare,
+            crate::config::StepSortFn::WithRdeps => DispatchEntry::compare_with_rdeps,
+        };
+        entries.sort_by(|a, b| cmp_fn(a, b));
 
-        let nr_steps_waiting_all_queues = self
-            .queues
-            .process(
-                {
-                    let state = self.clone();
-                    async move |constraint: queue::JobConstraint| {
-                        Box::pin(state.clone().realise_drv_on_valid_machine(constraint)).await
+        let mut nr_steps_waiting: i64 = 0;
+        for entry in &entries {
+            // Try to find a matching machine
+            if let Some(machine) = self.machines.get_machine_for_system(
+                &entry.system,
+                &entry.required_features,
+                Some(free_fn),
+            ) {
+                match Box::pin(self.clone().realise_drv_on_valid_machine(entry, machine)).await {
+                    Ok(true) => {
+                        // Successfully dispatched
                     }
-                },
-                &self.metrics,
-            )
-            .await;
-        self.metrics
-            .nr_steps_waiting
-            .set(nr_steps_waiting_all_queues);
+                    Ok(false) => {
+                        // Cancelled or cached failure, already handled
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to realise drv on valid machine: drv={} e={e}",
+                            entry.drv_path,
+                        );
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "No free machine found for system={} drv={}",
+                    entry.system,
+                    entry.drv_path,
+                );
+                nr_steps_waiting += 1;
+            }
+        }
+        self.metrics.nr_steps_waiting.set(nr_steps_waiting);
 
         self.abort_unsupported().await;
     }
@@ -1054,18 +1086,17 @@ impl State {
             .await
             .ok_or_else(|| anyhow::anyhow!("Step is missing in queues.scheduled"))?;
 
-        item.step_info.step.set_finished(true);
-
-        // Verify that for outputs with statically-known paths (input-addressed
-        // and fixed content-addressed), the paths reported by the builder match
-        // what we compute from the derivation.  A mismatch here would mean that
-        // the queue runner and builder are disagreeing on what the drv itself
-        // means (regardless of what it produces) which would be an "all bets
-        // are off" bug.
-        if let Some(expected) = item.step_info.step.get_output_paths(self.store.store_dir()) {
+        // Parse derivation to verify output paths
+        let drv_path_str = self.store.print_store_path(drv_path);
+        if let Some(drv) = nix_utils::query_drv(&self.store, drv_path)
+            .await
+            .ok()
+            .flatten()
+        {
+            let expected = nix_utils::output_paths(&drv, self.store.store_dir());
             for (name, expected_path) in &expected {
                 let Some(expected_path) = expected_path else {
-                    continue; // path not statically known (Deferred/CAFloating/Impure)
+                    continue;
                 };
                 if let Some(actual_path) = output.outputs.get(name) {
                     anyhow::ensure!(
@@ -1087,9 +1118,6 @@ impl State {
             .machine
             .remove_job(drv_path)
             .ok_or_else(|| anyhow::anyhow!("Job is missing in machine.jobs m={}", item.machine,))?;
-        self.queues
-            .remove_job(&item.step_info, &item.build_queue)
-            .await;
 
         job.result.step_status = BuildStatus::Success;
         job.result.set_stop_time_now();
@@ -1113,8 +1141,7 @@ impl State {
         )
         .await?;
 
-        // Copy outputs to non-S3 (FFI) stores so that
-        // hydra-notify plugins (e.g. DeclarativeJobsets) can read them.
+        // Copy outputs to non-S3 (FFI) stores
         {
             let ffi_base_stores: Vec<(String, nix_utils::BaseStoreImpl)> = {
                 let stores = self.remote_stores.read();
@@ -1150,8 +1177,6 @@ impl State {
             r.iter().any(|s| matches!(s, RemoteStoreBackend::S3(_)))
         };
         if has_s3_stores {
-            // Only upload outputs if presigned uploads are NOT enabled
-            // When presigned uploads are enabled, builder handles NAR uploads directly
             if !self.config.use_presigned_uploads() {
                 let outputs_to_upload = output
                     .outputs
@@ -1169,10 +1194,11 @@ impl State {
             }
         }
 
-        let direct = item.step_info.step.get_direct_builds();
-        if direct.is_empty() {
-            self.steps.remove(item.step_info.step.get_drv_path());
-        }
+        // Query direct builds from the DB
+        let direct_builds: Vec<Arc<Build>> = {
+            let builds = self.builds.clone_matching_drv(drv_path);
+            builds
+        };
 
         {
             let mut db = self.db.get().await?;
@@ -1183,7 +1209,7 @@ impl State {
                 .await?;
             let start_time = job.result.get_start_time_as_i32()?;
             let stop_time = job.result.get_stop_time_as_i32()?;
-            for b in &direct {
+            for b in &direct_builds {
                 let is_cached = owning_build_id != Some(b.id) || job.result.is_cached;
                 tx.mark_succeeded_build(
                     get_mark_build_sccuess_data(&self.store, b, &output),
@@ -1199,9 +1225,7 @@ impl State {
             tx.commit().await?;
         }
 
-        // Remove the direct dependencies from 'builds'. This will cause them to be
-        // destroyed.
-        for b in &direct {
+        for b in &direct_builds {
             b.set_finished_in_db(true);
             self.builds.remove_by_id(b.id);
         }
@@ -1209,14 +1233,24 @@ impl State {
         {
             let mut db = self.db.get().await?;
             let mut tx = db.begin_transaction().await?;
-            for b in direct {
+            for b in &direct_builds {
                 tx.notify_build_finished(b.id, &[]).await?;
             }
 
             tx.commit().await?;
         }
 
-        item.step_info.step.make_rdeps_runnable();
+        // Make reverse deps runnable in the DB
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            let ready_time = jiff::Timestamp::now().as_second() as i32;
+            if let Ok(mut conn) = self.db.get().await {
+                if let Ok(mut tx) = conn.begin_transaction().await {
+                    let _ = tx.make_rdeps_runnable(&drv_path_str, ready_time).await;
+                    let _ = tx.commit().await;
+                }
+            }
+        }
 
         // always trigger dispatch, as we now might have a free machine again
         self.trigger_dispatch();
@@ -1239,8 +1273,6 @@ impl State {
             .await
             .ok_or_else(|| anyhow::anyhow!("Step is missing in queues.scheduled"))?;
 
-        item.step_info.step.set_finished(false);
-
         tracing::debug!(
             "removing job from machine: drv_path={drv_path} m={}",
             item.machine.id
@@ -1251,7 +1283,6 @@ impl State {
             .ok_or_else(|| anyhow::anyhow!("Job is missing in machine.jobs m={}", item.machine))?;
 
         job.result.step_status = BuildStatus::Failed;
-        // this can override step_status to something more specific
         job.result.update_with_result_state(&state);
         job.result.set_stop_time_now();
         job.result.set_overhead(timings.get_overhead())?;
@@ -1265,30 +1296,34 @@ impl State {
         let (max_retries, retry_interval, retry_backoff) = self.config.get_retry();
 
         if job.result.can_retry {
-            item.step_info
-                .step
-                .atomic_state
-                .tries
-                .fetch_add(1, Ordering::Relaxed);
-            let tries = item
-                .step_info
-                .step
-                .atomic_state
-                .tries
-                .load(Ordering::Relaxed);
+            // Count previous attempts from BuildSteps for this drv_path
+            let drv_path_str = self.store.print_store_path(drv_path);
+            let tries = {
+                let mut conn = self.db.get().await?;
+                conn.count_build_steps_for_drv(&drv_path_str)
+                    .await
+                    .unwrap_or(0) as u32
+            };
             if tries < max_retries {
                 self.metrics.nr_retries.inc();
                 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-                let delta = (retry_interval * retry_backoff.powf((tries - 1) as f32)) as i64;
+                let delta =
+                    (retry_interval * retry_backoff.powf(tries.saturating_sub(1) as f32)) as i64;
                 tracing::info!("will retry '{drv_path}' after {delta}s");
-                item.step_info
-                    .step
-                    .set_after(jiff::Timestamp::now() + jiff::SignedDuration::from_secs(delta));
+
+                // Re-add to BuildStepCanCreate with a future readyTime
+                #[allow(clippy::cast_possible_truncation)]
+                let future_ready_time = (jiff::Timestamp::now().as_second() + delta) as i32;
+                if let Ok(mut conn) = self.db.get().await {
+                    if let Ok(mut tx) = conn.begin_transaction().await {
+                        let _ = tx.mark_step_ready(&drv_path_str, future_ready_time).await;
+                        let _ = tx.commit().await;
+                    }
+                }
+
                 if i64::from(tries) > self.metrics.max_nr_retries.get() {
                     self.metrics.max_nr_retries.set(i64::from(tries));
                 }
-
-                item.step_info.set_already_scheduled(false);
 
                 finish_build_step(
                     &self.db,
@@ -1305,18 +1340,8 @@ impl State {
             }
         }
 
-        // remove job from queues, aka actually fail the job
-        self.queues
-            .remove_job(&item.step_info, &item.build_queue)
-            .await;
-
-        self.inner_fail_job(
-            drv_path,
-            Some(item.machine),
-            job,
-            item.step_info.step.clone(),
-        )
-        .await
+        self.inner_fail_job_by_drv(drv_path, Some(item.machine), job)
+            .await
     }
 
     #[tracing::instrument(skip(self, output), fields(%machine_id, build_id=%build_id), err)]
@@ -1356,14 +1381,14 @@ impl State {
         self.fail_step(machine_id, &drv_path, state, timings).await
     }
 
+    /// Fail a job using only the drv_path (no in-memory Step required).
     #[allow(clippy::too_many_lines)]
-    #[tracing::instrument(skip(self, machine, job, step), fields(%drv_path), err)]
-    async fn inner_fail_job(
+    #[tracing::instrument(skip(self, machine, job), fields(%drv_path), err)]
+    async fn inner_fail_job_by_drv(
         &self,
         drv_path: &nix_utils::StorePath,
         machine: Option<Arc<Machine>>,
         mut job: machine::Job,
-        step: Arc<Step>,
     ) -> anyhow::Result<()> {
         if !job.result.has_stop_time() {
             job.result.set_stop_time_now();
@@ -1382,197 +1407,155 @@ impl State {
             .await?;
         }
 
-        // Look up which build owns the step (if one was created).
-        let owning_build_id = if let Some(attempt) = job.attempt {
-            let mut db = self.db.get().await?;
-            let mut tx = db.begin_transaction().await?;
-            let id = tx
-                .get_build_id_for_step(self.store.store_dir(), &job.path, attempt)
-                .await?;
-            tx.commit().await?;
-            id
-        } else {
-            None
-        };
+        // Parse derivation to get output paths for caching failures
+        let output_paths = nix_utils::query_drv(&self.store, drv_path)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| nix_utils::output_paths(&d, self.store.store_dir()));
+
+        // Get all builds that depend transitively on this derivation
+        let indirect: Vec<Arc<Build>> = self.get_all_indirect_builds_by_drv(drv_path).await;
 
         let mut dependent_ids = Vec::new();
-        let mut step_finished = false;
-        loop {
-            let indirect = self.get_all_indirect_builds(&step);
-            if indirect.is_empty() && step_finished {
-                break;
+        if !indirect.is_empty() {
+            let mut db = self.db.get().await?;
+            let mut tx = db.begin_transaction().await?;
+            for b in &indirect {
+                if b.get_finished_in_db() {
+                    continue;
+                }
+
+                tracing::info!("marking build {} as failed", b.id);
+                let start_time = job.result.get_start_time_as_i32()?;
+                let stop_time = job.result.get_stop_time_as_i32()?;
+                tx.update_build_after_failure(
+                    b.id,
+                    if b.drv_path != *drv_path && job.result.step_status == BuildStatus::Failed {
+                        BuildStatus::DepFailed
+                    } else {
+                        job.result.step_status
+                    },
+                    start_time,
+                    stop_time,
+                    job.result.step_status == BuildStatus::CachedFailure,
+                )
+                .await?;
+                self.metrics.nr_builds_done.inc();
             }
 
-            // Create failed build steps for every build that depends on this, except when this
-            // step is cached and is the top-level of that build (since then it's redundant with
-            // the build's isCachedBuild field).
-            {
-                let mut db = self.db.get().await?;
-                let mut tx = db.begin_transaction().await?;
-                for b in &indirect {
-                    if (job.result.step_status == BuildStatus::CachedFailure
-                        && &b.drv_path == step.get_drv_path())
-                        || ((job.result.step_status != BuildStatus::CachedFailure
-                            && job.result.step_status != BuildStatus::Unsupported)
-                            && owning_build_id == Some(b.id))
-                        || b.get_finished_in_db()
-                    {
-                        continue;
-                    }
-
-                    tx.create_build_step(
-                        self.store.store_dir(),
-                        None,
-                        b.id,
-                        step.get_drv_path(),
-                        step.get_system().as_deref(),
-                        machine
-                            .as_deref()
-                            .map(|m| m.hostname.clone())
-                            .unwrap_or_default(),
-                        job.result.step_status,
-                        job.result.error_msg.clone(),
-                        if owning_build_id == Some(b.id) {
-                            None
-                        } else {
-                            owning_build_id
-                        },
-                        step.get_output_paths(self.store.store_dir())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .collect(),
-                    )
-                    .await?;
-                }
-
-                // Mark all builds that depend on this derivation as failed.
-                for b in &indirect {
-                    if b.get_finished_in_db() {
-                        continue;
-                    }
-
-                    tracing::info!("marking build {} as failed", b.id);
-                    let start_time = job.result.get_start_time_as_i32()?;
-                    let stop_time = job.result.get_stop_time_as_i32()?;
-                    tx.update_build_after_failure(
-                        b.id,
-                        if &b.drv_path != step.get_drv_path()
-                            && job.result.step_status == BuildStatus::Failed
-                        {
-                            BuildStatus::DepFailed
-                        } else {
-                            job.result.step_status
-                        },
-                        start_time,
-                        stop_time,
-                        job.result.step_status == BuildStatus::CachedFailure,
-                    )
-                    .await?;
-                    self.metrics.nr_builds_done.inc();
-                }
-
-                // Remember failed paths in the database so that they won't be built again.
-                if job.result.step_status != BuildStatus::CachedFailure && job.result.can_cache {
-                    for (_, path) in step
-                        .get_output_paths(self.store.store_dir())
-                        .unwrap_or_default()
-                    {
+            // Remember failed paths
+            if job.result.step_status != BuildStatus::CachedFailure && job.result.can_cache {
+                if let Some(ref paths) = output_paths {
+                    for (_, path) in paths {
                         if let Some(path) = path {
-                            tx.insert_failed_paths(self.store.store_dir(), &path)
-                                .await?;
+                            tx.insert_failed_paths(self.store.store_dir(), path).await?;
                         }
                     }
                 }
-
-                tx.commit().await?;
             }
 
-            step_finished = true;
-
-            // Remove the indirect dependencies from 'builds'. This will cause them to be
-            // destroyed.
-            for b in indirect {
-                b.set_finished_in_db(true);
-                self.builds.remove_by_id(b.id);
-                dependent_ids.push(b.id);
-            }
+            tx.commit().await?;
         }
+
+        for b in &indirect {
+            b.set_finished_in_db(true);
+            self.builds.remove_by_id(b.id);
+            dependent_ids.push(b.id);
+        }
+
         {
             let mut db = self.db.get().await?;
             let mut tx = db.begin_transaction().await?;
-            tx.notify_build_finished(owning_build_id.unwrap_or(0), &dependent_ids)
+            tx.notify_build_finished(dependent_ids.first().copied().unwrap_or(0), &dependent_ids)
                 .await?;
             tx.commit().await?;
         }
 
-        // trigger dispatch, as we now have a free mashine again
         self.trigger_dispatch();
-
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, step))]
-    fn get_all_indirect_builds(&self, step: &Arc<Step>) -> HashSet<Arc<Build>> {
-        let mut indirect = HashSet::new();
-        let mut steps = HashSet::new();
-        step.get_dependents(&mut indirect, &mut steps);
+    /// Get all builds that transitively depend on a derivation, using DB queries.
+    #[tracing::instrument(skip(self), fields(%drv_path))]
+    async fn get_all_indirect_builds_by_drv(
+        &self,
+        drv_path: &nix_utils::StorePath,
+    ) -> Vec<Arc<Build>> {
+        let drv_path_str = self.store.print_store_path(drv_path);
+        let db_builds = {
+            let Ok(mut conn) = self.db.get().await else {
+                return Vec::new();
+            };
+            conn.get_dependent_builds(&drv_path_str)
+                .await
+                .unwrap_or_default()
+        };
 
-        // If there are no builds left, delete all referring
-        // steps from ‘steps’. As for the success case, we can
-        // be certain no new referrers can be added.
-        if indirect.is_empty() {
-            for s in steps {
-                let drv = s.get_drv_path();
-                tracing::debug!("finishing build step '{drv}'");
-                self.steps.remove(drv);
+        // Match DB build IDs to our in-memory Build objects
+        let store_dir = self.store.store_dir();
+        let mut result = Vec::new();
+        for db_build in db_builds {
+            // Also include direct builds for this drv_path
+            if let Ok(drv) = store_dir.parse(&db_build.drvpath) {
+                result.extend(self.builds.clone_matching_drv(&drv));
             }
         }
-
-        indirect
+        // Also include direct builds
+        result.extend(self.builds.clone_matching_drv(drv_path));
+        // Deduplicate
+        let mut seen = HashSet::new();
+        result.retain(|b| seen.insert(b.id));
+        result
     }
 
-    #[tracing::instrument(skip(self, build, step), err)]
+    #[tracing::instrument(skip(self, build), err)]
     async fn handle_previous_failure(
         &self,
         build: Arc<Build>,
-        step: Arc<Step>,
+        drv_path: &nix_utils::StorePath,
     ) -> anyhow::Result<()> {
-        // Some step previously failed, so mark the build as failed right away.
         tracing::warn!(
-            "marking build {} as cached failure due to '{}'",
+            "marking build {} as cached failure due to ‘{}’",
             build.id,
-            step.get_drv_path()
+            drv_path
         );
         if build.get_finished_in_db() {
             return Ok(());
         }
 
-        // if !build.finished_in_db
+        // Parse derivation for system and output paths
+        let drv_parsed = nix_utils::query_drv(&self.store, drv_path)
+            .await
+            .ok()
+            .flatten();
+        let system_str = drv_parsed.as_ref().map(|d| {
+            std::str::from_utf8(&d.platform)
+                .expect("platform must be valid UTF-8")
+                .to_owned()
+        });
+        let output_paths = drv_parsed
+            .as_ref()
+            .map(|d| nix_utils::output_paths(d, self.store.store_dir()))
+            .unwrap_or_default();
+
         let mut conn = self.db.get().await?;
         let mut tx = conn.begin_transaction().await?;
 
-        // Find the previous build step record, first by derivation path, then by output
-        // path.
         let mut propagated_from = tx
-            .get_last_build_step_id(self.store.store_dir(), step.get_drv_path())
+            .get_last_build_step_id(self.store.store_dir(), drv_path)
             .await?
             .unwrap_or_default();
 
         if propagated_from == 0 {
-            // we can access step.drv here because the value is always set if
-            // PreviousFailure is returned, so this should never yield None
-
-            let outputs = step
-                .get_output_paths(self.store.store_dir())
-                .unwrap_or_default();
-            for (name, path) in &outputs {
+            for (name, path) in &output_paths {
                 let res = if let Some(path) = path {
                     tx.get_last_build_step_id_for_output_path(self.store.store_dir(), path)
                         .await
                 } else {
                     tx.get_last_build_step_id_for_output_with_drv(
                         self.store.store_dir(),
-                        step.get_drv_path(),
+                        drv_path,
                         name.as_ref(),
                     )
                     .await
@@ -1587,22 +1570,18 @@ impl State {
         tx.create_build_step(
             self.store.store_dir(),
             None,
-            build.id,
-            step.get_drv_path(),
-            step.get_system().as_deref(),
+            drv_path,
+            system_str.as_deref(),
             String::new(),
             BuildStatus::CachedFailure,
             None,
             Some(propagated_from),
-            step.get_output_paths(self.store.store_dir())
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
+            output_paths.into_iter().collect(),
         )
         .await?;
         tx.update_build_after_previous_failure(
             build.id,
-            if step.get_drv_path() == &build.drv_path {
+            if drv_path == &build.drv_path {
                 BuildStatus::Failed
             } else {
                 BuildStatus::DepFailed
@@ -1626,7 +1605,6 @@ impl State {
         new_builds_by_id,
         new_builds_by_path,
         finished_drvs,
-        new_runnable
     ), fields(build_id=build.id))]
     async fn create_build(
         &self,
@@ -1635,7 +1613,6 @@ impl State {
         new_builds_by_id: Arc<parking_lot::RwLock<HashMap<BuildID, Arc<Build>>>>,
         new_builds_by_path: &HashMap<nix_utils::StorePath, HashSet<BuildID>>,
         finished_drvs: Arc<parking_lot::RwLock<HashSet<nix_utils::StorePath>>>,
-        new_runnable: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
     ) {
         self.metrics.queue_build_loads.inc();
         tracing::info!("loading build {} ({})", build.id, build.full_job_name());
@@ -1672,24 +1649,22 @@ impl State {
         }
 
         // Create steps for this derivation and its dependencies.
-        let new_steps = Arc::new(parking_lot::RwLock::new(HashSet::<Arc<Step>>::new()));
+        let new_step_paths = Arc::new(parking_lot::RwLock::new(
+            HashSet::<nix_utils::StorePath>::new(),
+        ));
         let step = match self
             .create_step(
-                // conn,
                 build.clone(),
                 build.drv_path.clone(),
-                Some(build.clone()),
-                None,
                 finished_drvs.clone(),
-                new_steps.clone(),
-                new_runnable.clone(),
+                new_step_paths.clone(),
             )
             .await
         {
             CreateStepResult::None => None,
-            CreateStepResult::Valid(dep) => Some(dep),
-            CreateStepResult::PreviousFailure(step) => {
-                if let Err(e) = self.handle_previous_failure(build, step).await {
+            CreateStepResult::Valid(drv_path) => Some(drv_path),
+            CreateStepResult::PreviousFailure(drv_path) => {
+                if let Err(e) = self.handle_previous_failure(build, &drv_path).await {
                     tracing::error!("Failed to handle previous failure: {e}");
                 }
                 return;
@@ -1700,10 +1675,10 @@ impl State {
             use futures::stream::StreamExt as _;
 
             let builds = {
-                let new_steps = new_steps.read();
-                new_steps
+                let new_step_paths = new_step_paths.read();
+                new_step_paths
                     .iter()
-                    .filter_map(|r| Some(new_builds_by_path.get(r.get_drv_path())?.clone()))
+                    .filter_map(|r| Some(new_builds_by_path.get(r)?.clone()))
                     .flatten()
                     .collect::<Vec<_>>()
             };
@@ -1711,7 +1686,6 @@ impl State {
                 let nr_added = nr_added.clone();
                 let new_builds_by_id = new_builds_by_id.clone();
                 let finished_drvs = finished_drvs.clone();
-                let new_runnable = new_runnable.clone();
                 async move {
                     let j = {
                         if let Some(j) = new_builds_by_id.read().get(&b) {
@@ -1727,7 +1701,6 @@ impl State {
                         new_builds_by_id,
                         new_builds_by_path,
                         finished_drvs,
-                        new_runnable,
                     ))
                     .await;
                 }
@@ -1736,20 +1709,12 @@ impl State {
             while tokio_stream::StreamExt::next(&mut stream).await.is_some() {}
         }
 
-        if let Some(step) = step {
+        if let Some(drv_path) = step {
             if !build.get_finished_in_db() {
                 self.builds.insert_new_build(build.clone());
             }
 
-            build.set_toplevel_step(step.clone());
-            build.propagate_priorities();
-
-            tracing::info!(
-                "added build {} (top-level step {}, {} new steps)",
-                build.id,
-                step.get_drv_path(),
-                new_steps.read().len()
-            );
+            tracing::info!("added build {} (top-level step {})", build.id, drv_path,);
         } else {
             // If we didn't get a step, it means the step's outputs are
             // all valid. So we mark this as a finished, cached build.
@@ -1759,25 +1724,23 @@ impl State {
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    /// Create a step in the DB for the given derivation and recursively for its deps.
+    ///
+    /// Returns `Valid(drv_path)` if the step was created or already exists,
+    /// `None` if the outputs are already built, or
+    /// `PreviousFailure(drv_path)` if there's a cached failure.
+    #[allow(clippy::too_many_lines)]
     #[tracing::instrument(skip(
         self,
-        build,
-        referring_build,
-        referring_step,
         finished_drvs,
-        new_steps,
-        new_runnable
-    ), fields(build_id=build.id, %drv_path))]
+        new_step_paths,
+    ), fields(%drv_path))]
     async fn create_step(
         &self,
         build: Arc<Build>,
         drv_path: nix_utils::StorePath,
-        referring_build: Option<Arc<Build>>,
-        referring_step: Option<Arc<Step>>,
         finished_drvs: Arc<parking_lot::RwLock<HashSet<nix_utils::StorePath>>>,
-        new_steps: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
-        new_runnable: Arc<parking_lot::RwLock<HashSet<Arc<Step>>>>,
+        new_step_paths: Arc<parking_lot::RwLock<HashSet<nix_utils::StorePath>>>,
     ) -> CreateStepResult {
         use futures::stream::StreamExt as _;
 
@@ -1788,12 +1751,19 @@ impl State {
             }
         }
 
-        let (step, is_new) =
-            self.steps
-                .create(&drv_path, referring_build.as_ref(), referring_step.as_ref());
-        if !is_new {
-            return CreateStepResult::Valid(step);
+        let drv_path_str = self.store.print_store_path(&drv_path);
+
+        // Check if this derivation already exists in the DB
+        {
+            if let Ok(mut conn) = self.db.get().await {
+                if let Ok(exists) = conn.derivation_exists(&drv_path_str).await {
+                    if exists {
+                        return CreateStepResult::Valid(drv_path);
+                    }
+                }
+            }
         }
+
         self.metrics.queue_steps_created.inc();
         tracing::debug!("considering derivation '{drv_path}'");
 
@@ -1818,7 +1788,6 @@ impl State {
         );
 
         let use_substitutes = self.config.get_use_substitutes();
-        // TODO: check all remote stores
         let remote_store: Option<binary_cache::S3BinaryCacheClient> = {
             let r = self.remote_stores.read();
             r.iter().find_map(|s| match s {
@@ -1838,7 +1807,6 @@ impl State {
                     .await
                     .is_empty()
             {
-                // we have all paths locally, so we can just upload them to the remote_store
                 if let Ok(log_file) = self.construct_log_file_path(&drv_path).await {
                     let missing_paths: Vec<nix_utils::StorePath> =
                         missing.values().filter_map(Clone::clone).collect();
@@ -1854,14 +1822,12 @@ impl State {
             }
             missing
         } else {
-            self.store.query_missing_outputs(output_paths).await
+            self.store.query_missing_outputs(output_paths.clone()).await
         };
 
-        step.set_drv(drv);
-
-        if self.check_cached_failure(step.clone()).await {
-            step.set_previous_failure(true);
-            return CreateStepResult::PreviousFailure(step);
+        // Check cached failure using output paths
+        if self.check_cached_failure_by_outputs(&output_paths).await {
+            return CreateStepResult::PreviousFailure(drv_path);
         }
 
         tracing::debug!("missing outputs: {missing_outputs:?}");
@@ -1872,15 +1838,10 @@ impl State {
             let missing_outputs_len = missing_outputs.len();
             let mut stream = futures::StreamExt::map(tokio_stream::iter(missing_outputs), |o| {
                 self.metrics.nr_substitutes_started.inc();
-                // TODO: `build.id` is an arbitrary pick — it's just whichever
-                // build's dependency walk discovered this substitution. See the
-                // TODO on `BuildSteps.build` in `hydra.sql` for why this column
-                // exists at all.
                 crate::utils::substitute_output(
                     self.db.clone(),
                     nix_utils::LocalStore::init(),
                     o,
-                    build.id,
                     &drv_path,
                     remote_store.as_ref(),
                 )
@@ -1912,47 +1873,29 @@ impl State {
             }
 
             finished_drvs.write().insert(drv_path.clone());
-            step.set_finished(true);
             return CreateStepResult::None;
         }
 
         tracing::debug!("creating build step '{drv_path}");
-        let Some(input_drvs) = step.get_input_drvs() else {
-            // this should never happen because we always a a drv set at this point in time
-            return CreateStepResult::None;
-        };
+        let input_drvs: Vec<nix_utils::StorePath> =
+            harmonia_store_core::derivation::DerivationInputs::from(&drv.inputs)
+                .drvs
+                .into_keys()
+                .collect();
 
-        let step2 = step.clone();
+        let mut dep_drv_paths: Vec<String> = Vec::new();
         let mut stream = futures::StreamExt::map(tokio_stream::iter(input_drvs), |i| {
             let build = build.clone();
-            let step = step2.clone();
             let finished_drvs = finished_drvs.clone();
-            let new_steps = new_steps.clone();
-            let new_runnable = new_runnable.clone();
-            async move {
-                Box::pin(self.create_step(
-                    // conn,
-                    build,
-                    i,
-                    None,
-                    Some(step),
-                    finished_drvs,
-                    new_steps,
-                    new_runnable,
-                ))
-                .await
-            }
+            let new_step_paths = new_step_paths.clone();
+            async move { Box::pin(self.create_step(build, i, finished_drvs, new_step_paths)).await }
         })
         .buffered(25);
         while let Some(v) = tokio_stream::StreamExt::next(&mut stream).await {
             match v {
                 CreateStepResult::None => (),
-                CreateStepResult::Valid(dep) => {
-                    if !dep.get_finished() && !dep.get_previous_failure() {
-                        // finished can be true if a step was returned, that already exists in
-                        // self.steps and is currently being processed for completion
-                        step.add_dep(dep);
-                    }
+                CreateStepResult::Valid(dep_drv) => {
+                    dep_drv_paths.push(self.store.print_store_path(&dep_drv));
                 }
                 CreateStepResult::PreviousFailure(step) => {
                     return CreateStepResult::PreviousFailure(step);
@@ -1960,34 +1903,59 @@ impl State {
             }
         }
 
-        {
-            step.atomic_state.set_created(true);
-            if step.get_deps_size() == 0 {
-                let mut new_runnable = new_runnable.write();
-                new_runnable.insert(step.clone());
+        // Insert this derivation and its dep edges into the DB
+        if let Ok(mut conn) = self.db.get().await {
+            if let Ok(mut tx) = conn.begin_transaction().await {
+                let _ = tx.ensure_derivation_path(&drv_path_str).await;
+                if !dep_drv_paths.is_empty() {
+                    let dep_refs: Vec<&str> = dep_drv_paths.iter().map(String::as_str).collect();
+                    let _ = tx.insert_step_deps(&drv_path_str, &dep_refs).await;
+                }
+                // Mark as ready if all deps are already satisfied
+                // (either zero deps, or all deps have a successful BuildSteps row).
+                #[allow(clippy::cast_possible_truncation)]
+                let ready_time = jiff::Timestamp::now().as_second() as i32;
+                let _ = tx.mark_step_ready_if_deps_satisfied(&drv_path_str, ready_time).await;
+                let _ = tx.commit().await;
             }
         }
 
         {
-            let mut new_steps = new_steps.write();
-            new_steps.insert(step.clone());
+            let mut new_step_paths = new_step_paths.write();
+            new_step_paths.insert(drv_path.clone());
         }
-        CreateStepResult::Valid(step)
+        CreateStepResult::Valid(drv_path)
     }
 
-    #[tracing::instrument(skip(self, step), ret, level = "debug")]
-    async fn check_cached_failure(&self, step: Arc<Step>) -> bool {
-        let Some(drv_outputs) = step.get_output_paths(self.store.store_dir()) else {
+    /// Check if a derivation's outputs have been previously marked as failed.
+    #[tracing::instrument(skip(self, drv_path), ret, level = "debug")]
+    async fn check_cached_failure_by_drv(&self, drv_path: &nix_utils::StorePath) -> bool {
+        let Some(drv) = nix_utils::query_drv(&self.store, drv_path)
+            .await
+            .ok()
+            .flatten()
+        else {
             return false;
         };
+        let output_paths = nix_utils::output_paths(&drv, self.store.store_dir());
+        self.check_cached_failure_by_outputs(&output_paths).await
+    }
 
+    /// Check if the given output paths have been previously marked as failed.
+    async fn check_cached_failure_by_outputs(
+        &self,
+        output_paths: &std::collections::BTreeMap<
+            nix_utils::OutputName,
+            Option<nix_utils::StorePath>,
+        >,
+    ) -> bool {
         let Ok(mut conn) = self.db.get().await else {
             return false;
         };
 
         conn.check_if_paths_failed(
             self.store.store_dir(),
-            &drv_outputs
+            &output_paths
                 .iter()
                 .filter_map(|(_, path)| path.clone())
                 .collect::<Vec<_>>(),
@@ -2085,65 +2053,94 @@ impl State {
         nix_utils::add_root(&self.store, &roots_dir, store_path);
     }
 
+    /// Check all ready steps in `BuildStepCanCreate` and abort those that have been
+    /// unsupported for too long.
     async fn abort_unsupported(&self) {
-        let runnable = self.steps.clone_runnable();
+        // Query ready steps from the DB
+        let candidates = match self.db.get().await {
+            Ok(mut conn) => conn.get_dispatch_candidates().await.unwrap_or_default(),
+            Err(_) => return,
+        };
+
         let now = jiff::Timestamp::now();
-
-        let mut aborted = HashSet::new();
-        let mut count = 0;
-
         let max_unsupported_time = self.config.get_max_unsupported_time();
-        for step in &runnable {
-            let supported = self.machines.support_step(step);
+        let mut count: i64 = 0;
+        let mut aborted: u64 = 0;
+
+        for candidate in &candidates {
+            let store_dir = self.store.store_dir();
+            let drv_path = match store_dir.parse(&candidate.drv_path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let Some(drv) = nix_utils::query_drv(&self.store, &drv_path)
+                .await
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let system = std::str::from_utf8(&drv.platform)
+                .expect("platform must be valid UTF-8")
+                .to_owned();
+            let required_features: Vec<String> = drv
+                .env
+                .get(b"requiredSystemFeatures".as_slice())
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .map(|v| {
+                    v.split(' ')
+                        .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let supported = self.machines.support_system(&system, &required_features);
             if supported {
-                step.set_last_supported_now();
                 continue;
             }
 
             count += 1;
-            if (now - step.get_last_supported())
+
+            // Check how long this step has been ready (using ready_time)
+            let ready_timestamp = jiff::Timestamp::from_second(i64::from(candidate.ready_time))
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+            let unsupported_duration = (now - ready_timestamp)
                 .total(jiff::Unit::Second)
-                .unwrap_or_default()
-                < max_unsupported_time.as_secs_f64()
-            {
+                .unwrap_or_default();
+            if unsupported_duration < max_unsupported_time.as_secs_f64() {
                 continue;
             }
 
-            let drv = step.get_drv_path();
-            let system = step.get_system();
-            tracing::error!("aborting unsupported build step '{drv}' (type '{system:?}')",);
+            tracing::error!("aborting unsupported build step '{drv_path}' (type '{system}')",);
 
-            aborted.insert(step.clone());
-
-            let mut dependents = HashSet::new();
-            let mut steps = HashSet::new();
-            step.get_dependents(&mut dependents, &mut steps);
-            // Maybe the step got cancelled.
+            // Get dependent builds from DB
+            let drv_path_str = self.store.print_store_path(&drv_path);
+            let dependents = self.get_all_indirect_builds_by_drv(&drv_path).await;
             if dependents.is_empty() {
                 continue;
             }
 
-            let mut job = machine::Job::new(drv.to_owned(), None);
+            let mut job = machine::Job::new(drv_path.clone(), None);
             job.result.set_start_and_stop(now);
             job.result.step_status = BuildStatus::Unsupported;
-            job.result.error_msg = Some(format!(
-                "unsupported system type '{}'",
-                system.unwrap_or(String::new())
-            ));
-            if let Err(e) = self.inner_fail_job(drv, None, job, step.clone()).await {
-                tracing::error!("Failed to fail step drv={drv} e={e}");
+            job.result.error_msg = Some(format!("unsupported system type '{system}'"));
+            if let Err(e) = self.inner_fail_job_by_drv(&drv_path, None, job).await {
+                tracing::error!("Failed to fail step drv={drv_path} e={e}");
             }
+
+            // Remove from BuildStepCanCreate
+            if let Ok(mut conn) = self.db.get().await {
+                if let Ok(mut tx) = conn.begin_transaction().await {
+                    let _ = tx.unmark_step_ready(&drv_path_str).await;
+                    let _ = tx.commit().await;
+                }
+            }
+
+            aborted += 1;
         }
 
-        {
-            for step in &aborted {
-                self.queues.remove_job_by_path(step.get_drv_path()).await;
-            }
-            self.queues.remove_all_weak_pointer().await;
-        }
         self.metrics.nr_unsupported_steps.set(count);
-        self.metrics
-            .nr_unsupported_steps_aborted
-            .inc_by(aborted.len() as u64);
+        self.metrics.nr_unsupported_steps_aborted.inc_by(aborted);
     }
 }

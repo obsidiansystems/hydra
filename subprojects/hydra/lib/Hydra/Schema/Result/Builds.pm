@@ -374,22 +374,22 @@ Related object: L<Hydra::Schema::Result::BuildSteps>
 __PACKAGE__->has_many(
   "buildsteps",
   "Hydra::Schema::Result::BuildSteps",
-  { "foreign.build" => "self.id" },
+  { "foreign.propagatedfrom" => "self.id" },
   undef,
 );
 
-=head2 buildsteps_propagatedfroms
+=head2 buildstepshistoricals
 
 Type: has_many
 
-Related object: L<Hydra::Schema::Result::BuildSteps>
+Related object: L<Hydra::Schema::Result::BuildStepsHistorical>
 
 =cut
 
 __PACKAGE__->has_many(
-  "buildsteps_propagatedfroms",
-  "Hydra::Schema::Result::BuildSteps",
-  { "foreign.propagatedfrom" => "self.id" },
+  "buildstepshistoricals",
+  "Hydra::Schema::Result::BuildStepsHistorical",
+  { "foreign.build" => "self.id" },
   undef,
 );
 
@@ -482,8 +482,8 @@ __PACKAGE__->many_to_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:XYL73NgUnsV/XCXzIKyozQ
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-26 16:52:15
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:qvHa7+4QMbJVgIyqiAjI1Q
 
 __PACKAGE__->has_many(
   "dependents",
@@ -499,13 +499,23 @@ __PACKAGE__->has_many(
   { "foreign.build" => "self.id" },
 );
 
-__PACKAGE__->has_one(
-  "actualBuildStep",
+# The build step(s) for this build's top-level derivation.
+# Matches on drvpath (a build's drv IS its top-level step's drv).
+__PACKAGE__->has_many(
+  "actualBuildSteps",
   "Hydra::Schema::Result::BuildSteps",
-  { 'foreign.drvpath' => 'self.drvpath'
-  , 'foreign.build' => 'self.id'
-  },
+  { 'foreign.drvpath' => 'self.drvpath' },
+  undef,
 );
+
+# Convenience: get the latest attempt for this build's top-level step.
+sub actualBuildStep {
+    my ($self) = @_;
+    return $self->actualBuildSteps->search(
+        {},
+        { order_by => { -desc => 'attempt' }, rows => 1 }
+    )->single;
+}
 
 __PACKAGE__->many_to_many("jobsetevals", "jobsetevalmembers", "eval");
 
@@ -549,6 +559,20 @@ makeQueries('ForProject', "and jobset_id in (select id from jobsets j where j.pr
 makeQueries('ForJobset', "and jobset_id = ?");
 makeQueries('ForJob', "and jobset_id = ? and job = ?");
 makeQueries('ForJobName', "and jobset_id = (select id from jobsets j where j.project = ? and j.name = ?) and job = ?");
+
+# Build steps historically associated with this build, via BuildStepsHistorical.
+# Uses a single JOIN query.
+# Note: the auto-generated "buildsteps" relationship goes through
+# propagatedFrom, which gives steps whose failure was propagated from
+# this build — not steps belonging to this build.
+sub historical_build_steps {
+    my ($self) = @_;
+    return $self->result_source->schema->resultset('BuildSteps')->search(
+        { 'buildstepshistorical.build' => $self->id },
+        { join => 'buildstepshistorical',
+          order_by => 'buildstepshistorical.stepnr' },
+    );
+}
 
 sub as_json {
   my ($self) = @_;

@@ -43,11 +43,11 @@ if ($wrapper) {
     is($wrapper->finished, 1, "wrapper should be finished");
     is($wrapper->buildstatus, 0, "wrapper should succeed");
 
-    # Hydra currently doesn't understand the dynamic derivation structure,
-    # so it only sees 2 build steps (producingDrv + wrapper itself) rather
-    # than the full chain (producingDrv + dynamic hello + wrapper).
-    my $nrSteps = $wrapper->buildsteps->count;
-    is($nrSteps, 2, "wrapper should have 2 build steps (dynamic structure not yet tracked)");
+    # Count steps reachable from this build's drvPath via the graph.
+    # The wrapper itself gets a BuildStep, plus its dependency (producingDrv).
+    # Dynamic derivation structure is now tracked via BuildStepDeps.
+    my $nrSteps = $wrapper->actualBuildSteps->count;
+    is($nrSteps, 1, "wrapper should have 1 build step (its own attempt)");
 }
 
 done_testing;

@@ -1,5 +1,4 @@
 use hashbrown::HashMap;
-
 use nix_utils::BaseStore as _;
 
 use super::{
@@ -118,13 +117,13 @@ impl StepsResponse {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueResponse {
-    queues: HashMap<String, Vec<StepInfo>>,
+    scheduled: Vec<StepInfo>,
 }
 
 impl QueueResponse {
     #[must_use]
-    pub const fn new(queues: HashMap<String, Vec<StepInfo>>) -> Self {
-        Self { queues }
+    pub const fn new(scheduled: Vec<StepInfo>) -> Self {
+        Self { scheduled }
     }
 }
 

@@ -2,30 +2,6 @@ use anyhow::Context as _;
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BuildQueueStats {
-    active_runnable: u64,
-    total_runnable: u64,
-    nr_runnable_waiting: u64,
-    nr_runnable_disabled: u64,
-    avg_runnable_time: u64,
-    wait_time_ms: u64,
-}
-
-impl From<crate::state::BuildQueueStats> for BuildQueueStats {
-    fn from(v: crate::state::BuildQueueStats) -> Self {
-        Self {
-            active_runnable: v.active_runnable,
-            total_runnable: v.total_runnable,
-            nr_runnable_waiting: v.nr_runnable_waiting,
-            nr_runnable_disabled: v.nr_runnable_disabled,
-            avg_runnable_time: v.avg_runnable_time,
-            wait_time_ms: v.wait_time,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 #[allow(clippy::struct_field_names)]
 pub struct MemoryStats {
     current_bytes: u64,

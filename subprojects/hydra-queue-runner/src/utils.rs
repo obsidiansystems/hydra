@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use db::models::BuildID;
 use nix_utils::{BaseStore as _, StorePath};
 
 use crate::state::RemoteBuild;
@@ -66,7 +65,6 @@ pub async fn substitute_output(
     db: db::Database,
     store: nix_utils::LocalStore,
     o: (nix_utils::OutputName, Option<StorePath>),
-    build_id: BuildID,
     drv_path: &StorePath,
     remote_store: Option<&binary_cache::S3BinaryCacheClient>,
 ) -> anyhow::Result<bool> {
@@ -101,7 +99,6 @@ pub async fn substitute_output(
         store.store_dir(),
         starttime,
         stoptime,
-        build_id,
         drv_path,
         (name.clone(), Some(path.clone())),
     )

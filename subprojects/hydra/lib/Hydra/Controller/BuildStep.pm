@@ -23,10 +23,22 @@ sub stepByDrvPathChain :Chained('/') :PathPart('step') :CaptureArgs(2) {
     notFound($c, "Build step not found for $drvPath attempt $attempt.") if !defined $step;
 
     $c->stash->{step} = $step;
-    $c->stash->{build} = $step->build;
-    $c->stash->{job} = $step->build->job;
-    $c->stash->{jobset} = $step->build->jobset;
-    $c->stash->{project} = $step->build->project;
+
+    # Find a build associated with this step (via historical mapping or drvPath match)
+    my $hist = $step->buildstepshistorical;
+    my $build;
+    if ($hist) {
+        $build = $hist->build;
+    } else {
+        # For new builds, find via drvPath
+        $build = $c->model('DB::Builds')->search({ drvpath => $drvPath })->first;
+    }
+    if ($build) {
+        $c->stash->{build} = $build;
+        $c->stash->{job} = $build->job;
+        $c->stash->{jobset} = $build->jobset;
+        $c->stash->{project} = $build->project;
+    }
 }
 
 
@@ -49,8 +61,20 @@ sub view_nixlog_by_drv : Chained('stepByDrvPathChain') PathPart('log') {
 sub buildStepChain :Chained('/build/buildChain') :PathPart('step') :CaptureArgs(1) {
     my ($self, $c, $stepnr) = @_;
 
-    my $step = $c->stash->{build}->buildsteps->find({stepnr => $stepnr});
-    notFound($c, "Build doesn't have a build step $stepnr.") if !defined $step;
+    my $build_id = $c->stash->{build}->id;
+
+    # Look up the historical mapping to find (drvPath, attempt)
+    my $hist = $c->model('DB::BuildStepsHistorical')->find({
+        build => $build_id,
+        stepnr => $stepnr,
+    });
+    notFound($c, "Build $build_id doesn't have a build step $stepnr.") if !defined $hist;
+
+    my $step = $c->model('DB::BuildSteps')->find({
+        drvpath => $hist->get_column('drvpath'),
+        attempt => $hist->get_column('attempt'),
+    });
+    notFound($c, "Build step not found.") if !defined $step;
 
     $c->stash->{step} = $step;
 }

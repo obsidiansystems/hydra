@@ -17,7 +17,11 @@ make_schema_at("Hydra::Schema", {
         "buildproducts" => "BuildProducts",
         "builds" => "Builds",
         "buildstepoutputs" => "BuildStepOutputs",
+        "buildstepcancreate" => "BuildStepCanCreate",
+        "buildstepdeps" => "BuildStepDeps",
         "buildsteps" => "BuildSteps",
+        "buildstepshistorical" => "BuildStepsHistorical",
+        "derivations" => "Derivations",
         "cachedbazaarinputs" => "CachedBazaarInputs",
         "cachedcvsinputs" => "CachedCVSInputs",
         "cacheddarcsinputs" => "CachedDarcsInputs",
@@ -48,5 +52,9 @@ make_schema_at("Hydra::Schema", {
         "users" => "Users",
     } , #sub { return "$_"; },
     components => [ "+Hydra::Component::ToJSON" ],
-    rel_name_map => { buildsteps_builds => "buildsteps" }
+    rel_name_map => {
+        buildsteps_builds => "buildsteps",
+        BuildSteps => { drvpath => "derivation" },
+        BuildStepDeps => { drvpath => "derivation", depdrvpath => "dep_derivation" },
+    }
 }, [$ARGV[0]]);

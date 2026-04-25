@@ -4,13 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use anyhow::Context;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 
-use super::{Jobset, JobsetID, Step};
+use super::{Jobset, JobsetID};
 use db::models::{BuildID, BuildStatus};
 use nix_utils::BaseStore as _;
-
-pub(super) type AtomicBuildID = AtomicI32;
 
 #[derive(Debug)]
 pub struct Build {
@@ -25,7 +23,6 @@ pub struct Build {
     pub local_priority: i32,
     pub global_priority: AtomicI32,
 
-    toplevel: arc_swap::ArcSwapOption<Step>,
     pub jobset: Arc<Jobset>,
 
     finished_in_db: AtomicBool,
@@ -61,7 +58,6 @@ impl Build {
             timeout: i32::MAX,
             local_priority: 1000,
             global_priority: 1000.into(),
-            toplevel: arc_swap::ArcSwapOption::from(None),
             jobset: Arc::new(Jobset::new(JobsetID::MAX, "debug", "debug")),
             finished_in_db: false.into(),
         })
@@ -80,7 +76,6 @@ impl Build {
             timeout: v.timeout.unwrap_or(36000),
             local_priority: v.priority,
             global_priority: v.globalpriority.into(),
-            toplevel: arc_swap::ArcSwapOption::from(None),
             jobset,
             finished_in_db: false.into(),
         }))
@@ -102,55 +97,6 @@ impl Build {
     #[inline]
     pub fn set_finished_in_db(&self, v: bool) {
         self.finished_in_db.store(v, Ordering::SeqCst);
-    }
-
-    #[inline]
-    pub fn set_toplevel_step(&self, step: Arc<Step>) {
-        self.toplevel.store(Some(step));
-    }
-
-    pub fn propagate_priorities(&self) {
-        let mut queued = HashSet::new();
-        let mut todo = std::collections::VecDeque::new();
-        {
-            let toplevel = self.toplevel.load();
-            if let Some(toplevel) = toplevel.as_ref() {
-                todo.push_back(toplevel.clone());
-            }
-        }
-
-        while let Some(step) = todo.pop_front() {
-            step.atomic_state.highest_global_priority.store(
-                std::cmp::max(
-                    step.atomic_state
-                        .highest_global_priority
-                        .load(Ordering::Relaxed),
-                    self.global_priority.load(Ordering::Relaxed),
-                ),
-                Ordering::Relaxed,
-            );
-            step.atomic_state.highest_local_priority.store(
-                std::cmp::max(
-                    step.atomic_state
-                        .highest_local_priority
-                        .load(Ordering::Relaxed),
-                    self.local_priority,
-                ),
-                Ordering::Relaxed,
-            );
-            step.atomic_state.lowest_build_id.store(
-                std::cmp::min(
-                    step.atomic_state.lowest_build_id.load(Ordering::Relaxed),
-                    self.id,
-                ),
-                Ordering::Relaxed,
-            );
-            step.add_jobset(self.jobset.clone());
-            for dep in step.get_all_deps_not_queued(&queued) {
-                queued.insert(dep.clone());
-                todo.push_back(dep);
-            }
-        }
     }
 }
 
@@ -718,17 +664,13 @@ impl Builds {
         let mut builds = self.inner.write();
         builds.retain(|k, _| curr_ids.contains_key(k));
         for (id, build) in builds.iter() {
-            let Some(new_priority) = curr_ids.get(id) else {
-                // we should never get into this case because of the retain above
-                continue;
-            };
-
-            if build.global_priority.load(Ordering::Relaxed) < *new_priority {
-                tracing::info!("priority of build {id} increased");
-                build
-                    .global_priority
-                    .store(*new_priority, Ordering::Relaxed);
-                build.propagate_priorities();
+            if let Some(new_priority) = curr_ids.get(id) {
+                if build.global_priority.load(Ordering::Relaxed) < *new_priority {
+                    tracing::info!("priority of build {id} increased");
+                    build
+                        .global_priority
+                        .store(*new_priority, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -741,5 +683,16 @@ impl Builds {
     pub fn remove_by_id(&self, id: BuildID) {
         let mut builds = self.inner.write();
         builds.remove(&id);
+    }
+
+    /// Get all builds whose `drv_path` matches the given path.
+    #[must_use]
+    pub fn clone_matching_drv(&self, drv_path: &nix_utils::StorePath) -> Vec<Arc<Build>> {
+        let builds = self.inner.read();
+        builds
+            .values()
+            .filter(|b| &b.drv_path == drv_path && !b.get_finished_in_db())
+            .cloned()
+            .collect()
     }
 }

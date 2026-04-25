@@ -875,12 +875,8 @@ impl PromMetrics {
         if let Ok(v) = i64::try_from(state.builds.len()) {
             self.nr_builds_unfinished.set(v);
         }
-        if let Ok(v) = i64::try_from(state.steps.len()) {
-            self.nr_steps_unfinished.set(v);
-        }
-        if let Ok(v) = i64::try_from(state.steps.len_runnable()) {
-            self.nr_steps_runnable.set(v);
-        }
+        // TODO: step counts now come from DB queries
+        // self.nr_steps_unfinished and self.nr_steps_runnable need DB queries
         if let Ok(v) = i64::try_from(state.machines.get_machine_count()) {
             self.machines_total.set(v);
         }
@@ -897,45 +893,16 @@ impl PromMetrics {
         self.refresh_time_metrics(state);
     }
 
-    async fn refresh_per_machine_type_metrics(&self, state: &Arc<super::State>) {
+    async fn refresh_per_machine_type_metrics(&self, _state: &Arc<super::State>) {
+        // Per-machine-type queue stats are no longer tracked in memory;
+        // the ready queue lives in the DB now. These metrics are left as
+        // reset/empty until we add DB-backed equivalents.
         self.runnable_per_machine_type.reset();
         self.running_per_machine_type.reset();
         self.waiting_per_machine_type.reset();
         self.disabled_per_machine_type.reset();
         self.avg_runnable_time_per_machine_type.reset();
         self.wait_time_per_machine_type.reset();
-        for (t, s) in state.queues.get_stats_per_queue().await {
-            if let Ok(v) = i64::try_from(s.total_runnable) {
-                self.runnable_per_machine_type
-                    .with_label_values(std::slice::from_ref(&t))
-                    .set(v);
-            }
-            if let Ok(v) = i64::try_from(s.active_runnable) {
-                self.running_per_machine_type
-                    .with_label_values(&[&t])
-                    .set(v);
-            }
-            if let Ok(v) = i64::try_from(s.nr_runnable_waiting) {
-                self.waiting_per_machine_type
-                    .with_label_values(&[&t])
-                    .set(v);
-            }
-            if let Ok(v) = i64::try_from(s.nr_runnable_disabled) {
-                self.disabled_per_machine_type
-                    .with_label_values(&[&t])
-                    .set(v);
-            }
-            if let Ok(v) = i64::try_from(s.avg_runnable_time) {
-                self.avg_runnable_time_per_machine_type
-                    .with_label_values(&[&t])
-                    .set(v);
-            }
-            if let Ok(v) = i64::try_from(s.wait_time) {
-                self.wait_time_per_machine_type
-                    .with_label_values(&[&t])
-                    .set(v);
-            }
-        }
     }
 
     fn refresh_per_machine_metrics(&self, state: &Arc<super::State>) {

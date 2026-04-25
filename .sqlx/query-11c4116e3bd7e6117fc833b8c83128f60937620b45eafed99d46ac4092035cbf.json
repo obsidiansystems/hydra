@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT build FROM buildsteps\n            WHERE drvPath = $1 AND attempt = $2\n            ",
+  "query": "\n            SELECT b.id AS build FROM buildsteps s\n            JOIN builds b ON b.drvPath = s.drvPath\n            WHERE s.drvPath = $1 AND s.attempt = $2\n            ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "593dbd579d453517583a053360f138e77366cf27ea60871d20b6cdb8d3e445d4"
+  "hash": "11c4116e3bd7e6117fc833b8c83128f60937620b45eafed99d46ac4092035cbf"
 }

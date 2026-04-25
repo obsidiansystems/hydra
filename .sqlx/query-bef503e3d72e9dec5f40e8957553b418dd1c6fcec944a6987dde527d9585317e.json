@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH ensure_drv AS (\n                INSERT INTO Derivations (path) VALUES ($1)\n                ON CONFLICT DO NOTHING\n            ),\n            ensure_dep AS (\n                INSERT INTO Derivations (path) VALUES ($2)\n                ON CONFLICT DO NOTHING\n            )\n            INSERT INTO BuildStepDeps (drvPath, depDrvPath) VALUES ($1, $2)\n            ON CONFLICT DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bef503e3d72e9dec5f40e8957553b418dd1c6fcec944a6987dde527d9585317e"
+}

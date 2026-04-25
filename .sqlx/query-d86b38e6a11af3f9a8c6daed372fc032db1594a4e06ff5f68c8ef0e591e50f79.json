@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT b.id AS build FROM buildsteps s\n            JOIN BuildStepOutputs o\n              ON s.drvPath = o.drvPath\n              AND s.attempt = o.attempt\n            JOIN builds b ON b.drvPath = s.drvPath\n            WHERE s.startTime != 0\n              AND s.stopTime != 0\n              AND s.status = 1\n              AND s.drvPath = $1\n              AND o.name = $2\n            ORDER BY s.attempt DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "build",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d86b38e6a11af3f9a8c6daed372fc032db1594a4e06ff5f68c8ef0e591e50f79"
+}

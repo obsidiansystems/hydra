@@ -1,42 +1,25 @@
-use std::sync::atomic::Ordering;
-
+/// IO representation of a step, for serialization to JSON.
+/// Now populated from database queries rather than in-memory `Step` objects.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
 pub struct Step {
-    drv_path: nix_utils::StorePath,
-    runnable: bool,
-    finished: bool,
-    previous_failure: bool,
-
-    created: bool,
-    tries: u32,
+    drv_path: String,
+    ready_time: i32,
     highest_global_priority: i32,
     highest_local_priority: i32,
-
     lowest_build_id: db::models::BuildID,
-    deps_count: u64,
+    rdeps_count: i64,
 }
 
-impl From<std::sync::Arc<crate::state::Step>> for Step {
-    fn from(item: std::sync::Arc<crate::state::Step>) -> Self {
+impl From<db::models::DispatchCandidate> for Step {
+    fn from(item: db::models::DispatchCandidate) -> Self {
         Self {
-            drv_path: item.get_drv_path().clone(),
-            runnable: item.get_runnable(),
-            finished: item.get_finished(),
-            previous_failure: item.get_previous_failure(),
-            created: item.atomic_state.get_created(),
-            tries: item.atomic_state.tries.load(Ordering::Relaxed),
-            highest_global_priority: item
-                .atomic_state
-                .highest_global_priority
-                .load(Ordering::Relaxed),
-            highest_local_priority: item
-                .atomic_state
-                .highest_local_priority
-                .load(Ordering::Relaxed),
-            lowest_build_id: item.atomic_state.lowest_build_id.load(Ordering::Relaxed),
-            deps_count: item.get_deps_size(),
+            drv_path: item.drv_path,
+            ready_time: item.ready_time,
+            highest_global_priority: item.highest_global_priority,
+            highest_local_priority: item.highest_local_priority,
+            lowest_build_id: item.lowest_build_id,
+            rdeps_count: item.rdeps_count,
         }
     }
 }

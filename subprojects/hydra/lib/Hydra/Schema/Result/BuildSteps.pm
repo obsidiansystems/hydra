@@ -35,17 +35,6 @@ __PACKAGE__->table("buildsteps");
 
 =head1 ACCESSORS
 
-=head2 build
-
-  data_type: 'integer'
-  is_foreign_key: 1
-  is_nullable: 0
-
-=head2 stepnr
-
-  data_type: 'integer'
-  is_nullable: 0
-
 =head2 type
 
   data_type: 'integer'
@@ -54,6 +43,7 @@ __PACKAGE__->table("buildsteps");
 =head2 drvpath
 
   data_type: 'text'
+  is_foreign_key: 1
   is_nullable: 0
 
 =head2 attempt
@@ -122,14 +112,10 @@ __PACKAGE__->table("buildsteps");
 =cut
 
 __PACKAGE__->add_columns(
-  "build",
-  { data_type => "integer", is_foreign_key => 1, is_nullable => 0 },
-  "stepnr",
-  { data_type => "integer", is_nullable => 0 },
   "type",
   { data_type => "integer", is_nullable => 0 },
   "drvpath",
-  { data_type => "text", is_nullable => 0 },
+  { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "attempt",
   { data_type => "integer", default_value => 0, is_nullable => 0 },
   "busy",
@@ -160,22 +146,6 @@ __PACKAGE__->add_columns(
 
 =over 4
 
-=item * L</build>
-
-=item * L</stepnr>
-
-=back
-
-=cut
-
-__PACKAGE__->set_primary_key("build", "stepnr");
-
-=head1 UNIQUE CONSTRAINTS
-
-=head2 C<buildsteps_drvpath_attempt_key>
-
-=over 4
-
 =item * L</drvpath>
 
 =item * L</attempt>
@@ -184,24 +154,9 @@ __PACKAGE__->set_primary_key("build", "stepnr");
 
 =cut
 
-__PACKAGE__->add_unique_constraint("buildsteps_drvpath_attempt_key", ["drvpath", "attempt"]);
+__PACKAGE__->set_primary_key("drvpath", "attempt");
 
 =head1 RELATIONS
-
-=head2 build
-
-Type: belongs_to
-
-Related object: L<Hydra::Schema::Result::Builds>
-
-=cut
-
-__PACKAGE__->belongs_to(
-  "build",
-  "Hydra::Schema::Result::Builds",
-  { id => "build" },
-  { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
-);
 
 =head2 buildstepoutputs
 
@@ -219,6 +174,39 @@ __PACKAGE__->has_many(
     "foreign.drvpath" => "self.drvpath",
   },
   undef,
+);
+
+=head2 buildstepshistorical
+
+Type: might_have
+
+Related object: L<Hydra::Schema::Result::BuildStepsHistorical>
+
+=cut
+
+__PACKAGE__->might_have(
+  "buildstepshistorical",
+  "Hydra::Schema::Result::BuildStepsHistorical",
+  {
+    "foreign.attempt" => "self.attempt",
+    "foreign.drvpath" => "self.drvpath",
+  },
+  undef,
+);
+
+=head2 derivation
+
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::Derivations>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "derivation",
+  "Hydra::Schema::Result::Derivations",
+  { path => "drvpath" },
+  { is_deferrable => 0, on_delete => "NO ACTION", on_update => "NO ACTION" },
 );
 
 =head2 propagatedfrom
@@ -242,20 +230,17 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:MsMR4xOqa6ADmMI5OucvtA
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-26 16:52:15
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:MnyaF4rAuWP1bZ9vFNSE4w
 
 my %hint = (
     columns => [
         "machine",
         "system",
-        "stepnr",
         "drvpath",
+        "attempt",
         "starttime",
     ],
-    eager_relations => {
-        build => 'id'
-    }
 );
 
 sub json_hint {

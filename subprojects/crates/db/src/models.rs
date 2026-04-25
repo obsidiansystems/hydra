@@ -134,7 +134,6 @@ pub struct UpdateBuild<'a> {
 
 #[derive(Debug)]
 pub struct InsertBuildStep<'a> {
-    pub build_id: BuildID,
     pub r#type: BuildType,
     pub drv_path: &'a StorePath,
     pub status: BuildStatus,
@@ -279,4 +278,14 @@ pub struct MarkBuildSuccessData<'a, StorePath = harmonia_store_core::store_path:
     pub outputs: HashMap<OutputName, StorePath>,
     pub products: Vec<BuildProduct<'a>>,
     pub metrics: Vec<BuildMetric<'a>>,
+}
+
+#[derive(Debug)]
+pub struct DispatchCandidate {
+    pub drv_path: String,
+    pub ready_time: i32,
+    pub highest_global_priority: i32,
+    pub highest_local_priority: i32,
+    pub lowest_build_id: BuildID,
+    pub rdeps_count: i64,
 }
