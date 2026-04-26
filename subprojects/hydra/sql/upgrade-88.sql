@@ -26,9 +26,24 @@ ALTER TABLE BuildStepOutputs ADD CONSTRAINT buildstepoutputs_drvpath_attempt_fke
     FOREIGN KEY (drvPath, attempt) REFERENCES BuildSteps(drvPath, attempt) ON DELETE CASCADE;
 
 -- Now that we have all our new indices, drop old constraints and columns.
+-- Drop old PK.
 ALTER TABLE BuildStepOutputs DROP CONSTRAINT buildstepoutputs_pkey;
-ALTER TABLE BuildStepOutputs DROP CONSTRAINT buildstepoutputs_build_fkey;
-ALTER TABLE BuildStepOutputs DROP CONSTRAINT buildstepoutputs_build_fkey1;
+-- Drop all old FKs on build/stepnr columns by finding them dynamically.
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+        WHERE con.conrelid = 'buildstepoutputs'::regclass
+          AND con.contype = 'f'
+          AND att.attname IN ('build', 'stepnr')
+        GROUP BY con.conname
+    LOOP
+        EXECUTE format('ALTER TABLE BuildStepOutputs DROP CONSTRAINT %I', r.conname);
+    END LOOP;
+END $$;
 ALTER TABLE BuildStepOutputs DROP COLUMN build;
 ALTER TABLE BuildStepOutputs DROP COLUMN stepnr;
 
