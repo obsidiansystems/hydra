@@ -330,20 +330,24 @@ create table BuildSteps (
 );
 
 
--- This makes the build trace: which
+-- Joined with BuildSteps.drvPath this makes the build trace: which
 -- output path a derivation's output actually resolved to. Hydra serves
 -- the corresponding `build-trace-v2/` routes as part of its on-the-fly
 -- binary cache.
 --
 -- TODO: signatures. We should store signatures in the database,
 -- otherwise these build trace entries cannot be used safely.
+--
+-- TODO we should migrate from the legacy `(build, stepnr)` to the modern
+-- `(drvPath, attempt)` to refer back to the parent build step.
 create table BuildStepOutputs (
-    drvPath       text not null,
-    attempt       integer not null,
+    build         integer not null,
+    stepnr        integer not null,
     name          text not null,
     path          text,
-    primary key   (drvPath, attempt, name),
-    foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade
+    primary key   (build, stepnr, name),
+    foreign key   (build) references Builds(id) on delete cascade,
+    foreign key   (build, stepnr) references BuildSteps(build, stepnr) on delete cascade
 );
 
 

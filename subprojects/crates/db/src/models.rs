@@ -168,18 +168,10 @@ pub struct InsertResolvedBuildStep<'a> {
     pub resolved_drv_path: &'a StorePath,
 }
 
-// TODO: `BuildStepOutputs` PK is `(build, stepnr, name)` with an FK back to
-// `BuildSteps(build, stepnr)`.  Once the PK is changed to reference `(drvPath,
-// attempt)` instead, as described in the corresponding TODO in the schema SQL
-// file, `build_id` and `step_nr` can be removed from this struct and the
-// surrounding insert logic.
-//
-// Until then, it is important that this is `pub(crate)` to prevent `step_nr`
-// for leaking elsewhere.
 #[derive(Debug)]
-pub(crate) struct InsertBuildStepOutput {
-    pub build_id: BuildID,
-    pub step_nr: i32,
+pub(crate) struct InsertBuildStepOutput<'a> {
+    pub drv_path: &'a StorePath,
+    pub attempt: i32,
     pub name: OutputName,
     pub path: Option<StorePath>,
 }

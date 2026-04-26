@@ -405,8 +405,8 @@ impl Connection {
                         ON sr.drvPath = $2 || '/' || s.resolvedDrvPath
                         AND sr.status = 0
                     JOIN buildstepoutputs o
-                        ON o.build = COALESCE(sr.build, s.build)
-                        AND o.stepnr = COALESCE(sr.stepnr, s.stepnr)
+                        ON o.drvPath = COALESCE(sr.drvPath, s.drvPath)
+                        AND o.attempt = COALESCE(sr.attempt, s.attempt)
                     WHERE s.drvPath = r.drv_path
                       AND o.name = i.chain[r.step]
                       AND o.path IS NOT NULL
@@ -448,24 +448,28 @@ impl Connection {
     ) -> crate::Result<Option<StorePath>> {
         let drv_display = store_dir.display(drv_path).to_string();
         let output_name_str: &str = output_name.as_ref();
-        let row: Option<(String,)> = sqlx::query_as(
-            r"SELECT o.path
-              FROM buildsteps s
-              JOIN buildstepoutputs o
-                  ON s.build = o.build AND s.stepnr = o.stepnr
-              WHERE s.drvPath = $1
-                AND o.name = $2
-                AND o.path IS NOT NULL
-                AND s.status = 0
-              ORDER BY s.build DESC
-              LIMIT 1",
+        let row = sqlx::query!(
+            r#"
+            SELECT o.path
+            FROM buildsteps s
+            JOIN buildstepoutputs o
+                ON s.drvPath = o.drvPath AND s.attempt = o.attempt
+            WHERE s.drvPath = $1
+              AND o.name = $2
+              AND o.path IS NOT NULL
+              AND s.status = 0
+            ORDER BY s.attempt DESC
+            LIMIT 1
+            "#,
+            drv_display.as_str(),
+            output_name_str,
         )
-        .bind(&drv_display)
-        .bind(output_name_str)
         .fetch_optional(&mut *self.conn)
         .await?;
 
-        row.map(|(path,)| Ok(store_dir.parse(&path)?)).transpose()
+        row.and_then(|r| r.path)
+            .map(|path| Ok(store_dir.parse(&path)?))
+            .transpose()
     }
 }
 
@@ -623,8 +627,8 @@ impl Transaction<'_> {
             r#"
             SELECT s.build FROM buildsteps s
             JOIN BuildStepOutputs o
-              ON s.build = o.build
-              AND s.stepnr = o.stepnr
+              ON s.drvPath = o.drvPath
+              AND s.attempt = o.attempt
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -650,8 +654,8 @@ impl Transaction<'_> {
             r#"
             SELECT s.build FROM buildsteps s
             JOIN BuildStepOutputs o
-              ON s.build = o.build
-              AND s.stepnr = o.stepnr
+              ON s.drvPath = o.drvPath
+              AND s.attempt = o.attempt
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -779,18 +783,18 @@ impl Transaction<'_> {
     pub(crate) async fn insert_build_step_outputs(
         &mut self,
         store_dir: &StoreDir,
-        outputs: &[InsertBuildStepOutput],
+        outputs: &[InsertBuildStepOutput<'_>],
     ) -> crate::Result<()> {
         if outputs.is_empty() {
             return Ok(());
         }
 
         let mut query_builder =
-            sqlx::QueryBuilder::new("INSERT INTO buildstepoutputs (build, stepnr, name, path) ");
+            sqlx::QueryBuilder::new("INSERT INTO buildstepoutputs (drvPath, attempt, name, path) ");
 
         query_builder.push_values(outputs, |mut b, output| {
-            b.push_bind(output.build_id)
-                .push_bind(output.step_nr)
+            b.push_bind(store_dir.display(output.drv_path).to_string())
+                .push_bind(output.attempt)
                 .push_bind(output.name.as_ref())
                 .push_bind(
                     output
@@ -819,10 +823,8 @@ impl Transaction<'_> {
         sqlx::query!(
             r#"
             UPDATE buildstepoutputs SET path = $4
-            WHERE (build, stepnr) = (
-                SELECT build, stepnr FROM buildsteps
-                WHERE drvPath = $1 AND attempt = $2
-            )
+            WHERE drvPath = $1
+              AND attempt = $2
               AND name = $3
             "#,
             drv_path.as_str(),
@@ -842,18 +844,20 @@ impl Transaction<'_> {
         drv_path: &StorePath,
     ) -> crate::Result<BTreeMap<OutputName, StorePath>> {
         let drv_path = store_dir.display(drv_path).to_string();
-        let items: Vec<(String, String)> = sqlx::query_as(
-            r"SELECT o.name, o.path
-              FROM buildstepoutputs o
-              JOIN buildsteps s ON s.build = o.build AND s.stepnr = o.stepnr
-              WHERE s.drvpath = $1 AND o.path IS NOT NULL",
+        let items = sqlx::query!(
+            r#"
+            SELECT name, path
+            FROM buildstepoutputs
+            WHERE drvPath = $1 AND path IS NOT NULL
+            "#,
+            drv_path.as_str(),
         )
-        .bind(drv_path)
         .fetch_all(&mut *self.tx)
         .await?;
 
         items
             .into_iter()
+            .filter_map(|r| r.path.map(|path| (r.name, path)))
             .map(|(name, path)| -> crate::Result<_> {
                 let name: OutputName = name.parse()?;
                 let path: StorePath = store_dir.parse(&path)?;
@@ -1083,7 +1087,7 @@ impl Transaction<'_> {
         propagated_from: Option<BuildID>,
         outputs: BTreeMap<OutputName, Option<StorePath>>,
     ) -> crate::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
                     store_dir,
@@ -1107,7 +1111,7 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
@@ -1116,8 +1120,8 @@ impl Transaction<'_> {
             &outputs
                 .into_iter()
                 .map(|(name, path)| InsertBuildStepOutput {
-                    build_id,
-                    step_nr,
+                    drv_path,
+                    attempt,
                     name,
                     path,
                 })
@@ -1150,7 +1154,7 @@ impl Transaction<'_> {
         resolved_drv_path: &StorePath,
         outputs: BTreeMap<OutputName, Option<StorePath>>,
     ) -> crate::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_resolved_build_step(
                     store_dir,
@@ -1165,7 +1169,7 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
@@ -1174,8 +1178,8 @@ impl Transaction<'_> {
             &outputs
                 .into_iter()
                 .map(|(name, path)| InsertBuildStepOutput {
-                    build_id,
-                    step_nr,
+                    drv_path,
+                    attempt,
                     name,
                     path,
                 })
@@ -1200,7 +1204,7 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         outputs: BTreeMap<OutputName, StorePath>,
     ) -> crate::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
                     store_dir,
@@ -1220,15 +1224,15 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
         let output_items: Vec<_> = outputs
             .into_iter()
             .map(|(name, path)| InsertBuildStepOutput {
-                build_id,
-                step_nr,
+                drv_path,
+                attempt,
                 name,
                 path: Some(path),
             })
@@ -1254,7 +1258,7 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         output: (OutputName, Option<StorePath>),
     ) -> crate::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
                     store_dir,
@@ -1274,15 +1278,15 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
         self.insert_build_step_outputs(
             store_dir,
             &[InsertBuildStepOutput {
-                build_id,
-                step_nr,
+                drv_path,
+                attempt,
                 name: output.0,
                 path: output.1,
             }],
@@ -1516,18 +1520,19 @@ mod tests {
 
     async fn insert_output(
         conn: &mut Connection,
-        build: i32,
-        stepnr: i32,
+        drv_path: &StorePath,
+        attempt: i32,
         name: &str,
         path: &StorePath,
     ) {
+        let sd = test_store_dir();
         sqlx::query(
-            "INSERT INTO BuildStepOutputs (build, stepnr, name, path) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO BuildStepOutputs (drvPath, attempt, name, path) VALUES ($1, $2, $3, $4)",
         )
-        .bind(build)
-        .bind(stepnr)
+        .bind(sd.display(drv_path).to_string())
+        .bind(attempt)
         .bind(name)
-        .bind(test_store_dir().display(path).to_string())
+        .bind(sd.display(path).to_string())
         .execute(&mut *conn.conn)
         .await
         .unwrap();
@@ -1599,7 +1604,7 @@ mod tests {
     async fn resolve_depth_1() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("result")).await;
 
         let results = conn
             .resolve_drv_output_chains(&test_store_dir(), &[(&sp("foo.drv"), &[&on("out")])])
@@ -1612,9 +1617,9 @@ mod tests {
     async fn resolve_depth_2() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("bar.drv")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("bar.drv")).await;
         insert_step(&mut conn, 2, 1, &sp("bar.drv")).await;
-        insert_output(&mut conn, 2, 1, "dev", &sp("final")).await;
+        insert_output(&mut conn, &sp("bar.drv"), 0, "dev", &sp("final")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1630,9 +1635,9 @@ mod tests {
     async fn resolve_batch() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("foo-out")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("foo-out")).await;
         insert_step(&mut conn, 2, 1, &sp("bar.drv")).await;
-        insert_output(&mut conn, 2, 1, "lib", &sp("bar-lib")).await;
+        insert_output(&mut conn, &sp("bar.drv"), 0, "lib", &sp("bar-lib")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1651,7 +1656,7 @@ mod tests {
     async fn resolve_missing() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("result")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1677,13 +1682,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_picks_latest_build() {
+    async fn resolve_picks_latest_attempt() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
         insert_output(
             &mut conn,
-            1,
-            1,
+            &sp("foo.drv"),
+            0,
             "out",
             &sp("aldaldaldaldaldaldaldaldaldaldal-result"),
         )
@@ -1691,7 +1696,7 @@ mod tests {
         insert_step(&mut conn, 5, 1, &sp("foo.drv")).await;
         insert_output(
             &mut conn,
-            5,
+            &sp("foo.drv"),
             1,
             "out",
             &sp("nawnawnawnawnawnawnawnawnawnawna-result"),
@@ -1727,7 +1732,7 @@ mod tests {
         .await;
         // A successful buildstep for the resolved drv (could be any build)
         insert_step(&mut conn, 2, 1, &sp("resolved.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("resolved.drv"), 0, "out", &sp("result")).await;
 
         // Looking up via the unresolved drv path should find the output
         // through the resolvedDrvPath chain.
@@ -1756,11 +1761,18 @@ mod tests {
         )
         .await;
         insert_step(&mut conn, 2, 1, &sp("resolved.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("intermediate.drv")).await;
+        insert_output(
+            &mut conn,
+            &sp("resolved.drv"),
+            0,
+            "out",
+            &sp("intermediate.drv"),
+        )
+        .await;
 
         // Build 3: the intermediate drv
         insert_step(&mut conn, 3, 1, &sp("intermediate.drv")).await;
-        insert_output(&mut conn, 3, 1, "out", &sp("final")).await;
+        insert_output(&mut conn, &sp("intermediate.drv"), 0, "out", &sp("final")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1780,21 +1792,21 @@ mod tests {
 
         // Depth 1: aaa.drv ^out => result-a
         insert_step(&mut conn, 1, 1, &sp("aaa.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result-a")).await;
+        insert_output(&mut conn, &sp("aaa.drv"), 0, "out", &sp("result-a")).await;
 
         // Depth 2: bbb.drv ^out => ccc.drv, ccc.drv ^lib => result-b
         insert_step(&mut conn, 2, 1, &sp("bbb.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("ccc.drv")).await;
+        insert_output(&mut conn, &sp("bbb.drv"), 0, "out", &sp("ccc.drv")).await;
         insert_step(&mut conn, 3, 1, &sp("ccc.drv")).await;
-        insert_output(&mut conn, 3, 1, "lib", &sp("result-b")).await;
+        insert_output(&mut conn, &sp("ccc.drv"), 0, "lib", &sp("result-b")).await;
 
         // Depth 3: ddd.drv ^out => eee.drv, eee.drv ^dev => fff.drv, fff.drv ^bin => result-c
         insert_step(&mut conn, 4, 1, &sp("ddd.drv")).await;
-        insert_output(&mut conn, 4, 1, "out", &sp("eee.drv")).await;
+        insert_output(&mut conn, &sp("ddd.drv"), 0, "out", &sp("eee.drv")).await;
         insert_step(&mut conn, 5, 1, &sp("eee.drv")).await;
-        insert_output(&mut conn, 5, 1, "dev", &sp("fff.drv")).await;
+        insert_output(&mut conn, &sp("eee.drv"), 0, "dev", &sp("fff.drv")).await;
         insert_step(&mut conn, 6, 1, &sp("fff.drv")).await;
-        insert_output(&mut conn, 6, 1, "bin", &sp("result-c")).await;
+        insert_output(&mut conn, &sp("fff.drv"), 0, "bin", &sp("result-c")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1823,7 +1835,7 @@ mod tests {
     async fn resolve_drv_output_basic() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("result")).await;
 
         let result = conn
             .resolve_drv_output(&test_store_dir(), &sp("foo.drv"), &on("out"))
@@ -1846,9 +1858,9 @@ mod tests {
     async fn resolve_drv_output_picks_latest_build() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("old-result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("old-result")).await;
         insert_step(&mut conn, 5, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 5, 1, "out", &sp("new-result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 1, "out", &sp("new-result")).await;
 
         let result = conn
             .resolve_drv_output(&test_store_dir(), &sp("foo.drv"), &on("out"))
@@ -1880,7 +1892,14 @@ mod tests {
         .await;
         // Build 2: the resolved drv was built successfully
         insert_step(&mut conn, 2, 1, &sp("resolved-ca-dep.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("ca-dep-output")).await;
+        insert_output(
+            &mut conn,
+            &sp("resolved-ca-dep.drv"),
+            0,
+            "out",
+            &sp("ca-dep-output"),
+        )
+        .await;
 
         // Depth-1 chain: look up "out" of the unresolved drv path.
         // The query should follow resolvedDrvPath to find the output.
