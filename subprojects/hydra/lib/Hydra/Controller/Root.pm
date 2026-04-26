@@ -69,8 +69,8 @@ sub begin :Private {
     }
 
     if (scalar(@args) == 0 || $args[0] ne "static") {
-        $c->stash->{nrRunningBuilds} = dbh($c)->selectrow_array(
-            "select count(distinct build) from buildsteps where busy != 0");
+        $c->stash->{nrRunningSteps} = dbh($c)->selectrow_array(
+            "select count(distinct drvPath) from buildsteps where busy != 0");
         $c->stash->{nrQueuedBuilds} = $c->model('DB::Builds')->search({ finished => 0 })->count();
     }
 
@@ -219,11 +219,9 @@ sub machines :Local Args(0) {
 
     $c->stash->{machines} = $machines;
     $c->stash->{steps} = dbh($c)->selectall_arrayref(
-        "select build, stepnr, s.system as system, s.drvpath as drvpath, machine, s.starttime as starttime, jobsets.project as project, jobsets.name as jobset, job, s.busy as busy " .
+        "select s.system as system, s.drvpath as drvpath, s.attempt as attempt, machine, s.starttime as starttime, s.busy as busy " .
         "from BuildSteps s " .
-        "join Builds b on s.build = b.id " .
-        "join Jobsets jobsets on jobsets.id = b.jobset_id " .
-        "where busy != 0 order by machine, stepnr",
+        "where busy != 0 order by machine, s.attempt",
         { Slice => {} });
     $c->stash->{template} = 'machine-status.tt';
     $c->stash->{human_bytes} = sub {

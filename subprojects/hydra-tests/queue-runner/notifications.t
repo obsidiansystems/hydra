@@ -125,9 +125,9 @@ subtest "Build: not substitutable, unsubstitutable" => sub {
     subtest "Second notification: step_finished" => sub {
         my ($channelName, $pid, $payload) = @{$dbh->func("pg_notifies")};
         is($channelName, "step_finished", "The event is for the step finishing");
-        my ($buildId, $stepNr, $logFile) = split /\t/, $payload;
-        is($buildId, $build->id, "The payload is the build's ID");
-        is($stepNr, 1, "The payload is the build's step number");
+        my ($drvPath, $attempt, $logFile) = split /\t/, $payload;
+        is($drvPath, $build->drvpath, "The payload contains the drvPath");
+        is($attempt, 0, "The payload contains the attempt number");
         isnt($logFile, undef, "The log file is passed");
     };
 

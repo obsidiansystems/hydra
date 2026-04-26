@@ -30,10 +30,10 @@ END;
         [% IF ( type == "All" ) || ( type == "Failed" && step.busy == 0 && step.status != 0 ) || ( type == "Running" && step.busy != 0 ) %]
           [% has_log = seen.${step.drvpath} ? 0 : buildStepLogExists(step);
              seen.${step.drvpath} = 1;
-             stepUrl = c.uri_for('/build' build.id 'step' step.stepnr);
-             logUrl = c.uri_for('/build' build.id 'step' step.stepnr 'log'); %]
+             stepUrl = c.uri_for('/step' step.drvpath.remove('^.*/') step.attempt);
+             logUrl = c.uri_for('/step' step.drvpath.remove('^.*/') step.attempt 'log'); %]
           <tr>
-            <td><a class="row-link" [% HTML.attributes(href => stepUrl) %]>[% HTML.escape(step.stepnr) %]</a></td>
+            <td><a class="row-link" [% HTML.attributes(href => stepUrl) %]>[% HTML.escape(step.attempt) %]</a></td>
             <td>
               [% IF step.type == 0 %]
                 Build of <tt>[% INCLUDE renderOutputs outputs=step.buildstepoutputs %]</tt>
@@ -178,7 +178,7 @@ END;
               <tr>
                 <th>Logfile:</th>
                 <td>
-                  [% actualLog = cachedBuildStep ? c.uri_for('/build' cachedBuild.id 'step' cachedBuildStep.stepnr 'log') : c.uri_for('/build' build.id 'log') %]
+                  [% actualLog = cachedBuildStep ? c.uri_for('/step' cachedBuildStep.drvpath.remove('^.*/') cachedBuildStep.attempt 'log') : c.uri_for('/build' build.id 'log') %]
                   [% INCLUDE renderLogButtons url=actualLog %]
                 </td>
               </tr>

@@ -1,12 +1,12 @@
 [%
   buildUrl = c.uri_for('/build', build.id);
   IF step;
-    stepUrl = c.uri_for('/build', build.id, 'step', step.stepnr);
-    logUrl = c.uri_for('/build', build.id, 'step', step.stepnr, 'log');
+    stepUrl = c.uri_for('/step', step.drvpath.remove('^.*/'), step.attempt);
+    logUrl = c.uri_for('/step', step.drvpath.remove('^.*/'), step.attempt, 'log');
     drvpath = step.drvpath;
-    titleText = "Log of step ${step.stepnr} of build ${build.id} of job " _ makeNameTextForJob(build.jobset, job);
-    titleLink = "Log of <a href=\"$stepUrl\">step ${step.stepnr}</a>"
-              _ " of <a href=\"$buildUrl\">build ${build.id}</a>"
+    titleText = "Log of attempt ${step.attempt} of " _ step.drvpath.remove('^.*/') _ " of job " _ makeNameTextForJob(build.jobset, job);
+    titleLink = "Log of <a href=\"$stepUrl\">attempt ${step.attempt}</a>"
+              _ " of <tt>" _ step.drvpath.remove('^.*/') _ "</tt>"
               _ " of job " _ linkToJob(build.jobset, job);
   ELSE;
     logUrl = c.uri_for('/build', build.id, 'log');

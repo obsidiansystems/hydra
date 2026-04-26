@@ -11,8 +11,7 @@ order of descending finish time.</p>
       <th></th>
       <th>What</th>
       <th>Job</th>
-      <th>Build</th>
-      <th>Step</th>
+      <th>Attempt</th>
       <th>When</th>
       <th>Duration</th>
       <th>Machine</th>
@@ -24,8 +23,7 @@ order of descending finish time.</p>
         <td>[% INCLUDE renderBuildStatusIcon buildstatus=step.status size=16 %]</td>
         <td><tt>[% step.drvpath.match('-(.*).drv').0 %]</tt></td>
         <td><tt>[% INCLUDE renderFullJobNameOfBuild build=step.build %]</tt></td>
-        <td><a [% HTML.attributes(href => c.uri_for('/build' step.build.id)) %]>[% HTML.escape(step.build.id) %]</a></td>
-        <td><a class="row-link" [% HTML.attributes(href => c.uri_for('/build' step.build.id 'step' step.stepnr 'log' 'tail')) %]>[% HTML.escape(step.stepnr) %]</a></td>
+        <td><a class="row-link" [% HTML.attributes(href => c.uri_for('/step' step.drvpath.remove('^.*/') step.attempt 'log' 'tail')) %]>[% HTML.escape(step.attempt) %]</a></td>
         <td>[% INCLUDE renderRelativeDate timestamp=step.stoptime %]</td>
         <td style="width: 10em">[% INCLUDE renderDuration duration = step.stoptime - step.starttime %] </td>
         <td><tt>[% INCLUDE renderMachineName machine=step.machine %]</tt></td>

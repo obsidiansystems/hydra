@@ -46,23 +46,18 @@ subtest "Parsing step_finished" => sub {
         "four arguments"
     );
     like(
-        dies { Hydra::Event::parse_payload("step_finished", "abc123\t123\t/path/to/log") },
+        dies { Hydra::Event::parse_payload("step_finished", "/nix/store/abc-foo.drv\tnot_a_number\t/path/to/log") },
         qr/should be an integer/,
-        "not an integer: first position"
-    );
-    like(
-        dies { Hydra::Event::parse_payload("step_finished", "123\tabc123\t/path/to/log") },
-        qr/should be an integer/,
-        "not an integer: second argument"
+        "not an integer: attempt"
     );
     is(
-        Hydra::Event::parse_payload("step_finished", "123\t456\t/path/to/logfile"),
-        Hydra::Event::StepFinished->new(123, 456, "/path/to/logfile")
+        Hydra::Event::parse_payload("step_finished", "/nix/store/abc-foo.drv\t0\t/path/to/logfile"),
+        Hydra::Event::StepFinished->new("/nix/store/abc-foo.drv", 0, "/path/to/logfile")
     );
 };
 
 subtest "interested" => sub {
-    my $event = Hydra::Event::StepFinished->new(123, []);
+    my $event = Hydra::Event::StepFinished->new("/nix/store/abc-foo.drv", 0, undef);
 
     subtest "A plugin which does not implement the API" => sub {
         my $plugin = {};
@@ -89,12 +84,12 @@ subtest "load" => sub {
       { },
       { limit => 1 }
     )->next;
-    my $build = $step->build;
 
-    my $event = Hydra::Event::StepFinished->new($build->id, $step->stepnr, "/foo/bar/baz");
+    my $event = Hydra::Event::StepFinished->new($step->drvpath, $step->attempt, "/foo/bar/baz");
 
     $event->load($db);
-    is($event->{"step"}->get_column("build"), $build->id, "The build record matches.");
+    is($event->{"step"}->drvpath, $step->drvpath, "The drvpath matches.");
+    is($event->{"step"}->attempt, $step->attempt, "The attempt matches.");
 
     # Create a fake "plugin" with a stepFinished sub, the sub sets this
     # "global" passedStep, passedLogPath variables.
@@ -113,8 +108,8 @@ subtest "load" => sub {
 
     $event->execute($db, $plugin);
 
-    is($passedStep->get_column("build"), $build->id, "The plugin's stepFinished hook is called with a step from the expected build");
-    is($passedStep->stepnr, $step->stepnr, "The plugin's stepFinished hook is called with the proper step of the build");
+    is($passedStep->drvpath, $step->drvpath, "The plugin's stepFinished hook is called with the correct drvpath");
+    is($passedStep->attempt, $step->attempt, "The plugin's stepFinished hook is called with the correct attempt");
     is($passedLogPath, "/foo/bar/baz", "The plugin's stepFinished hook is called with the proper log path");
 };
 

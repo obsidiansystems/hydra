@@ -75,9 +75,7 @@
         [% IF name == name2 %]
           [% idle = 0 %]
           <tr>
-            <td><tt>[% INCLUDE renderFullJobName project=step.project jobset=step.jobset job=step.job %]</tt></td>
-            <td><a [% HTML.attributes(href => c.uri_for('/build' step.build)) %]>[% HTML.escape(step.build) %]</a></td>
-            <td>[% IF step.busy >= 30 %]<a class="row-link" [% HTML.attributes(href => c.uri_for('/build' step.build 'step' step.stepnr 'log' 'tail')) %]>[% HTML.escape(step.stepnr) %]</a>[% ELSE; HTML.escape(step.stepnr); END %]</td>
+            <td>[% IF step.busy >= 30 %]<a class="row-link" [% HTML.attributes(href => c.uri_for('/step' step.drvpath.remove('^.*/') step.attempt 'log' 'tail')) %]>[% HTML.escape(step.attempt) %]</a>[% ELSE; HTML.escape(step.attempt); END %]</td>
             <td><tt>[% step.drvpath.match('-(.*)').0 | html %]</tt></td>
             <td>[% INCLUDE renderBusyStatus %]</td>
             <td style="width: 10em">[% INCLUDE renderDuration duration = curTime - step.starttime %] </td>
@@ -85,7 +83,7 @@
         [% END %]
       [% END %]
       [% IF idle == 1 %]
-        <tr><td colspan="6">Idle</td></tr>
+        <tr><td colspan="4">Idle</td></tr>
       [% END %]
     </tbody>
   [% END %]

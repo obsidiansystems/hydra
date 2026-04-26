@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT build FROM buildsteps\n            WHERE drvPath = $1\n              AND startTime != 0\n              AND stopTime != 0\n              AND status = 1\n            ORDER BY attempt DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "build",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cf06fe8d67460631168ed1fe6fe9daf403e015638728c38cb6b32cfc8aaf5d2b"
+}

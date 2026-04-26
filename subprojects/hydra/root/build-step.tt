@@ -2,16 +2,16 @@
   buildUrl = c.uri_for('/build', build.id);
 %]
 [% WRAPPER layout.tt
-  title="Step ${step.stepnr} of build ${build.id} of job " _ makeNameTextForJob(build.jobset, job)
-  titleHTML="Step ${step.stepnr}"
-           _ " of <a href=\"$buildUrl\">build ${build.id}</a>"
+  title="Attempt ${step.attempt} of " _ step.drvpath.remove('^.*/') _ " of job " _ makeNameTextForJob(build.jobset, job)
+  titleHTML="Attempt ${step.attempt}"
+           _ " of <tt>" _ step.drvpath.remove('^.*/') _ "</tt>"
            _ " of job " _ linkToJob(build.jobset, job)
 %]
 [% PROCESS common.tt %]
 [% PROCESS "build-common.tt" %]
 [% USE HTML %]
 
-[% logUrl = c.uri_for('/build' build.id 'step' step.stepnr 'log') %]
+[% logUrl = c.uri_for('/step' step.drvpath.remove('^.*/') step.attempt 'log') %]
 [% has_log = buildStepLogExists(step) %]
 
 <table class="info-table">
@@ -56,6 +56,14 @@
       <td>[% INCLUDE renderLogButtons url=logUrl %]</td>
     </tr>
   [% END %]
+  <tr>
+    <th>Build:</th>
+    <td>[% INCLUDE renderBuildIdLink id=step.get_column('build') %]</td>
+  </tr>
+  <tr>
+    <th>Step number:</th>
+    <td>[% step.stepnr %]</td>
+  </tr>
 </table>
 
 [% END %]

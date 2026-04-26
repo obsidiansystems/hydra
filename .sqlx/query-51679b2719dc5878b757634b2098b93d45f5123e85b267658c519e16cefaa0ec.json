@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE buildsteps SET busy = $1\n            WHERE drvPath = $2\n              AND attempt = $3\n              AND busy != 0\n              AND status IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "51679b2719dc5878b757634b2098b93d45f5123e85b267658c519e16cefaa0ec"
+}

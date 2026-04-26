@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE buildsteps SET\n              busy = 0,\n              status = $1,\n              errorMsg = $4,\n              startTime = $5,\n              stopTime = $6,\n              machine = $7,\n              overhead = $8,\n              timesBuilt = $9,\n              isNonDeterministic = $10\n            WHERE\n              drvPath = $2 AND attempt = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3cfd933bc582ae2c17a34c88be79b5fcacdf89c028870b64a86d4b2204fe26a2"
+}

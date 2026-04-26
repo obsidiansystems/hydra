@@ -147,39 +147,33 @@ pub struct InsertBuildStep<'a> {
     pub machine: &'a str,
 }
 
+// TODO: `BuildStepOutputs` PK is `(build, stepnr, name)` with an FK back to
+// `BuildSteps(build, stepnr)`.  Once the PK is changed to reference `(drvPath,
+// attempt)` instead, as described in the corresponding TODO in the schema SQL
+// file, `build_id` and `step_nr` can be removed from this struct and the
+// surrounding insert logic.
+//
+// Until then, it is important that this is `pub(crate)` to prevent `step_nr`
+// for leaking elsewhere.
 #[derive(Debug)]
-pub struct InsertBuildStepOutput<StorePath = harmonia_store_core::store_path::StorePath> {
+pub(crate) struct InsertBuildStepOutput {
     pub build_id: BuildID,
     pub step_nr: i32,
     pub name: OutputName,
     pub path: Option<StorePath>,
 }
 
-impl InsertBuildStepOutput<String> {
-    pub fn parse_paths(
-        self,
-        store_dir: &StoreDir,
-    ) -> Result<InsertBuildStepOutput, ParseStorePathError> {
-        Ok(InsertBuildStepOutput {
-            build_id: self.build_id,
-            step_nr: self.step_nr,
-            name: self.name,
-            path: self.path.map(|p| store_dir.parse(&p)).transpose()?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct UpdateBuildStep {
-    pub build_id: BuildID,
-    pub step_nr: i32,
+#[derive(Debug)]
+pub struct UpdateBuildStep<'a> {
+    pub drv_path: &'a StorePath,
+    pub attempt: i32,
     pub status: StepStatus,
 }
 
 #[derive(Debug)]
 pub struct UpdateBuildStepInFinish<'a> {
-    pub build_id: BuildID,
-    pub step_nr: i32,
+    pub drv_path: &'a StorePath,
+    pub attempt: i32,
     pub status: BuildStatus,
     pub error_msg: Option<&'a str>,
     pub start_time: i32,

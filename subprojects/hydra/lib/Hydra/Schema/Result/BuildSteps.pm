@@ -54,7 +54,13 @@ __PACKAGE__->table("buildsteps");
 =head2 drvpath
 
   data_type: 'text'
-  is_nullable: 1
+  is_nullable: 0
+
+=head2 attempt
+
+  data_type: 'integer'
+  default_value: 0
+  is_nullable: 0
 
 =head2 busy
 
@@ -123,7 +129,9 @@ __PACKAGE__->add_columns(
   "type",
   { data_type => "integer", is_nullable => 0 },
   "drvpath",
-  { data_type => "text", is_nullable => 1 },
+  { data_type => "text", is_nullable => 0 },
+  "attempt",
+  { data_type => "integer", default_value => 0, is_nullable => 0 },
   "busy",
   { data_type => "integer", is_nullable => 0 },
   "status",
@@ -161,6 +169,22 @@ __PACKAGE__->add_columns(
 =cut
 
 __PACKAGE__->set_primary_key("build", "stepnr");
+
+=head1 UNIQUE CONSTRAINTS
+
+=head2 C<buildsteps_drvpath_attempt_key>
+
+=over 4
+
+=item * L</drvpath>
+
+=item * L</attempt>
+
+=back
+
+=cut
+
+__PACKAGE__->add_unique_constraint("buildsteps_drvpath_attempt_key", ["drvpath", "attempt"]);
 
 =head1 RELATIONS
 
@@ -215,8 +239,8 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07049 @ 2021-08-26 12:02:36
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:GzztRd7OwomaT3Xi7NB2RQ
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:05:36
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:cZkLad1lEA3Yhwclrdhl7Q
 
 my %hint = (
     columns => [

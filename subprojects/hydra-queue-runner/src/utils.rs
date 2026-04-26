@@ -9,8 +9,8 @@ use crate::state::RemoteBuild;
 pub async fn finish_build_step(
     db: &db::Database,
     store: &nix_utils::LocalStore,
-    build_id: BuildID,
-    step_nr: i32,
+    drv_path: &StorePath,
+    attempt: i32,
     res: &RemoteBuild,
     machine: Option<&str>,
     output_paths: Option<&BTreeMap<nix_utils::OutputName, StorePath>>,
@@ -26,30 +26,33 @@ pub async fn finish_build_step(
         res.get_start_time_as_i32(),
         res.get_stop_time_as_i32(),
     );
-    tx.update_build_step_in_finish(db::models::UpdateBuildStepInFinish {
-        build_id,
-        step_nr,
-        status: res.step_status,
-        error_msg: res.error_msg.as_deref(),
-        start_time: res.get_start_time_as_i32()?,
-        stop_time: res.get_stop_time_as_i32()?,
-        machine,
-        overhead: res.get_overhead(),
-        times_built: res.get_times_built(),
-        is_non_deterministic: res.get_is_non_deterministic(),
-    })
+    tx.update_build_step_in_finish(
+        store.store_dir(),
+        db::models::UpdateBuildStepInFinish {
+            drv_path,
+            attempt,
+            status: res.step_status,
+            error_msg: res.error_msg.as_deref(),
+            start_time: res.get_start_time_as_i32()?,
+            stop_time: res.get_stop_time_as_i32()?,
+            machine,
+            overhead: res.get_overhead(),
+            times_built: res.get_times_built(),
+            is_non_deterministic: res.get_is_non_deterministic(),
+        },
+    )
     .await?;
     debug_assert!(!res.log_file.is_empty());
     debug_assert!(!res.log_file.contains('\t'));
 
-    tx.notify_step_finished(build_id, step_nr, &res.log_file)
+    tx.notify_step_finished(store.store_dir(), drv_path, attempt, &res.log_file)
         .await?;
 
     if res.step_status == db::models::BuildStatus::Success
         && let Some(output_paths) = output_paths
     {
         for (name, path) in output_paths {
-            tx.update_build_step_output(store.store_dir(), build_id, step_nr, name.as_ref(), path)
+            tx.update_build_step_output(store.store_dir(), drv_path, attempt, name.as_ref(), path)
                 .await?;
         }
     }

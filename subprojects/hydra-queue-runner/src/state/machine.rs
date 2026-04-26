@@ -4,8 +4,6 @@ use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
 
-use db::models::BuildID;
-
 use super::{RemoteBuild, System};
 use crate::config::{MachineFreeFn, MachineSortFn};
 use crate::server::grpc::runner_v1::{AbortMessage, BuildMessage, JoinMessage, runner_request};
@@ -492,23 +490,17 @@ pub struct Job {
     pub internal_build_id: uuid::Uuid,
     pub path: nix_utils::StorePath,
     pub resolved_drv: Option<nix_utils::StorePath>,
-    pub build_id: BuildID,
-    pub step_nr: i32,
+    pub attempt: Option<i32>,
     pub result: RemoteBuild,
 }
 
 impl Job {
-    pub fn new(
-        build_id: BuildID,
-        path: nix_utils::StorePath,
-        resolved_drv: Option<nix_utils::StorePath>,
-    ) -> Self {
+    pub fn new(path: nix_utils::StorePath, resolved_drv: Option<nix_utils::StorePath>) -> Self {
         Self {
             internal_build_id: uuid::Uuid::new_v4(),
             path,
             resolved_drv,
-            build_id,
-            step_nr: 0,
+            attempt: None,
             result: RemoteBuild::new(),
         }
     }
@@ -690,7 +682,7 @@ impl Machine {
 
     #[tracing::instrument(
         skip(self, job, opts, presigned_url_opts),
-        fields(build_id=job.build_id, step_nr=job.step_nr),
+        fields(%job.path, attempt=job.attempt),
         err,
     )]
     pub async fn build_drv(
@@ -841,19 +833,25 @@ impl Machine {
     }
 
     #[tracing::instrument(skip(self), fields(%drv))]
-    pub fn get_build_id_and_step_nr(&self, drv: &nix_utils::StorePath) -> Option<(i32, i32)> {
+    pub fn get_drv_path_and_attempt(
+        &self,
+        drv: &nix_utils::StorePath,
+    ) -> Option<(nix_utils::StorePath, i32)> {
         let jobs = self.jobs.read();
         jobs.iter()
             .find(|j| &j.path == drv)
-            .map(|j| (j.build_id, j.step_nr))
+            .and_then(|j| Some((j.path.clone(), j.attempt?)))
     }
 
     #[tracing::instrument(skip(self), fields(%build_id))]
-    pub fn get_build_id_and_step_nr_by_uuid(&self, build_id: uuid::Uuid) -> Option<(i32, i32)> {
+    pub fn get_drv_path_and_attempt_by_uuid(
+        &self,
+        build_id: uuid::Uuid,
+    ) -> Option<(nix_utils::StorePath, i32)> {
         let jobs = self.jobs.read();
         jobs.iter()
             .find(|j| j.internal_build_id == build_id)
-            .map(|j| (j.build_id, j.step_nr))
+            .and_then(|j| Some((j.path.clone(), j.attempt?)))
     }
 
     #[tracing::instrument(skip(self), fields(%build_id))]
