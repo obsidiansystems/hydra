@@ -214,7 +214,10 @@ Related object: L<Hydra::Schema::Result::BuildStepOutputs>
 __PACKAGE__->has_many(
   "buildstepoutputs",
   "Hydra::Schema::Result::BuildStepOutputs",
-  { "foreign.build" => "self.build", "foreign.stepnr" => "self.stepnr" },
+  {
+    "foreign.attempt" => "self.attempt",
+    "foreign.drvpath" => "self.drvpath",
+  },
   undef,
 );
 
@@ -239,8 +242,8 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:05:36
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:cZkLad1lEA3Yhwclrdhl7Q
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:MsMR4xOqa6ADmMI5OucvtA
 
 my %hint = (
     columns => [

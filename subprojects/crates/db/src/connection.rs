@@ -367,7 +367,7 @@ impl Connection {
                     SELECT o.path
                     FROM buildsteps s
                     JOIN buildstepoutputs o
-                        ON s.build = o.build AND s.stepnr = o.stepnr
+                        ON s.drvPath = o.drvPath AND s.attempt = o.attempt
                     WHERE s.drvPath = r.drv_path
                       AND o.name = i.chain[r.step]
                       AND o.path IS NOT NULL
@@ -571,8 +571,8 @@ impl Transaction<'_> {
             r#"
             SELECT s.build FROM buildsteps s
             JOIN BuildStepOutputs o
-              ON s.build = o.build
-              AND s.stepnr = o.stepnr
+              ON s.drvPath = o.drvPath
+              AND s.attempt = o.attempt
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -598,8 +598,8 @@ impl Transaction<'_> {
             r#"
             SELECT s.build FROM buildsteps s
             JOIN BuildStepOutputs o
-              ON s.build = o.build
-              AND s.stepnr = o.stepnr
+              ON s.drvPath = o.drvPath
+              AND s.attempt = o.attempt
             WHERE s.startTime != 0
               AND s.stopTime != 0
               AND s.status = 1
@@ -673,18 +673,18 @@ impl Transaction<'_> {
     pub(crate) async fn insert_build_step_outputs(
         &mut self,
         store_dir: &StoreDir,
-        outputs: &[InsertBuildStepOutput],
+        outputs: &[InsertBuildStepOutput<'_>],
     ) -> sqlx::Result<()> {
         if outputs.is_empty() {
             return Ok(());
         }
 
         let mut query_builder =
-            sqlx::QueryBuilder::new("INSERT INTO buildstepoutputs (build, stepnr, name, path) ");
+            sqlx::QueryBuilder::new("INSERT INTO buildstepoutputs (drvPath, attempt, name, path) ");
 
         query_builder.push_values(outputs, |mut b, output| {
-            b.push_bind(output.build_id)
-                .push_bind(output.step_nr)
+            b.push_bind(store_dir.display(output.drv_path).to_string())
+                .push_bind(output.attempt)
                 .push_bind(output.name.as_ref())
                 .push_bind(
                     output
@@ -713,10 +713,8 @@ impl Transaction<'_> {
         sqlx::query!(
             r#"
             UPDATE buildstepoutputs SET path = $4
-            WHERE (build, stepnr) = (
-                SELECT build, stepnr FROM buildsteps
-                WHERE drvPath = $1 AND attempt = $2
-            )
+            WHERE drvPath = $1
+              AND attempt = $2
               AND name = $3
             "#,
             drv_path.as_str(),
@@ -938,7 +936,7 @@ impl Transaction<'_> {
         propagated_from: Option<BuildID>,
         outputs: BTreeMap<OutputName, Option<StorePath>>,
     ) -> sqlx::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
                     store_dir,
@@ -962,7 +960,7 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
@@ -971,8 +969,8 @@ impl Transaction<'_> {
             &outputs
                 .into_iter()
                 .map(|(name, path)| InsertBuildStepOutput {
-                    build_id,
-                    step_nr,
+                    drv_path,
+                    attempt,
                     name,
                     path,
                 })
@@ -1002,7 +1000,7 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         output: (OutputName, Option<StorePath>),
     ) -> anyhow::Result<i32> {
-        let (step_nr, attempt) = loop {
+        let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
                     store_dir,
@@ -1022,15 +1020,15 @@ impl Transaction<'_> {
                 )
                 .await?
             {
-                break ids;
+                break ids.1;
             }
         };
 
         self.insert_build_step_outputs(
             store_dir,
             &[InsertBuildStepOutput {
-                build_id,
-                step_nr,
+                drv_path,
+                attempt,
                 name: output.0,
                 path: output.1,
             }],
@@ -1260,18 +1258,19 @@ mod tests {
 
     async fn insert_output(
         conn: &mut Connection,
-        build: i32,
-        stepnr: i32,
+        drv_path: &StorePath,
+        attempt: i32,
         name: &str,
         path: &StorePath,
     ) {
+        let sd = test_store_dir();
         sqlx::query(
-            "INSERT INTO BuildStepOutputs (build, stepnr, name, path) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO BuildStepOutputs (drvPath, attempt, name, path) VALUES ($1, $2, $3, $4)",
         )
-        .bind(build)
-        .bind(stepnr)
+        .bind(sd.display(drv_path).to_string())
+        .bind(attempt)
         .bind(name)
-        .bind(test_store_dir().display(path).to_string())
+        .bind(sd.display(path).to_string())
         .execute(&mut *conn.conn)
         .await
         .unwrap();
@@ -1281,7 +1280,7 @@ mod tests {
     async fn resolve_depth_1() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("result")).await;
 
         let results = conn
             .resolve_drv_output_chains(&test_store_dir(), &[(&sp("foo.drv"), &[&on("out")])])
@@ -1294,9 +1293,9 @@ mod tests {
     async fn resolve_depth_2() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("bar.drv")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("bar.drv")).await;
         insert_step(&mut conn, 2, 1, &sp("bar.drv")).await;
-        insert_output(&mut conn, 2, 1, "dev", &sp("final")).await;
+        insert_output(&mut conn, &sp("bar.drv"), 0, "dev", &sp("final")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1312,9 +1311,9 @@ mod tests {
     async fn resolve_batch() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("foo-out")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("foo-out")).await;
         insert_step(&mut conn, 2, 1, &sp("bar.drv")).await;
-        insert_output(&mut conn, 2, 1, "lib", &sp("bar-lib")).await;
+        insert_output(&mut conn, &sp("bar.drv"), 0, "lib", &sp("bar-lib")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1333,7 +1332,7 @@ mod tests {
     async fn resolve_missing() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result")).await;
+        insert_output(&mut conn, &sp("foo.drv"), 0, "out", &sp("result")).await;
 
         let results = conn
             .resolve_drv_output_chains(
@@ -1359,13 +1358,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_picks_latest_build() {
+    async fn resolve_picks_latest_attempt() {
         let (_pg, mut conn) = setup().await;
         insert_step(&mut conn, 1, 1, &sp("foo.drv")).await;
         insert_output(
             &mut conn,
-            1,
-            1,
+            &sp("foo.drv"),
+            0,
             "out",
             &sp("aldaldaldaldaldaldaldaldaldaldal-result"),
         )
@@ -1373,7 +1372,7 @@ mod tests {
         insert_step(&mut conn, 5, 1, &sp("foo.drv")).await;
         insert_output(
             &mut conn,
-            5,
+            &sp("foo.drv"),
             1,
             "out",
             &sp("nawnawnawnawnawnawnawnawnawnawna-result"),
@@ -1398,21 +1397,21 @@ mod tests {
 
         // Depth 1: aaa.drv ^out => result-a
         insert_step(&mut conn, 1, 1, &sp("aaa.drv")).await;
-        insert_output(&mut conn, 1, 1, "out", &sp("result-a")).await;
+        insert_output(&mut conn, &sp("aaa.drv"), 0, "out", &sp("result-a")).await;
 
         // Depth 2: bbb.drv ^out => ccc.drv, ccc.drv ^lib => result-b
         insert_step(&mut conn, 2, 1, &sp("bbb.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("ccc.drv")).await;
+        insert_output(&mut conn, &sp("bbb.drv"), 0, "out", &sp("ccc.drv")).await;
         insert_step(&mut conn, 3, 1, &sp("ccc.drv")).await;
-        insert_output(&mut conn, 3, 1, "lib", &sp("result-b")).await;
+        insert_output(&mut conn, &sp("ccc.drv"), 0, "lib", &sp("result-b")).await;
 
         // Depth 3: ddd.drv ^out => eee.drv, eee.drv ^dev => fff.drv, fff.drv ^bin => result-c
         insert_step(&mut conn, 4, 1, &sp("ddd.drv")).await;
-        insert_output(&mut conn, 4, 1, "out", &sp("eee.drv")).await;
+        insert_output(&mut conn, &sp("ddd.drv"), 0, "out", &sp("eee.drv")).await;
         insert_step(&mut conn, 5, 1, &sp("eee.drv")).await;
-        insert_output(&mut conn, 5, 1, "dev", &sp("fff.drv")).await;
+        insert_output(&mut conn, &sp("eee.drv"), 0, "dev", &sp("fff.drv")).await;
         insert_step(&mut conn, 6, 1, &sp("fff.drv")).await;
-        insert_output(&mut conn, 6, 1, "bin", &sp("result-c")).await;
+        insert_output(&mut conn, &sp("fff.drv"), 0, "bin", &sp("result-c")).await;
 
         let results = conn
             .resolve_drv_output_chains(

@@ -318,16 +318,13 @@ create table BuildSteps (
 );
 
 
--- TODO we should migrate from the legacy `(build, stepnr)` to the modern
--- `(drvPath, attempt)` to refer back to the parent build step.
 create table BuildStepOutputs (
-    build         integer not null,
-    stepnr        integer not null,
+    drvPath       text not null,
+    attempt       integer not null,
     name          text not null,
     path          text,
-    primary key   (build, stepnr, name),
-    foreign key   (build) references Builds(id) on delete cascade,
-    foreign key   (build, stepnr) references BuildSteps(build, stepnr) on delete cascade
+    primary key   (drvPath, attempt, name),
+    foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade
 );
 
 

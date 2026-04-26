@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE buildstepoutputs SET path = $4\n            WHERE drvPath = $1\n              AND attempt = $2\n              AND name = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "686e722462f1c0ca405291f54710e371eef3d222339695de13a97cbf5ce5d309"
+}

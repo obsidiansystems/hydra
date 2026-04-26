@@ -363,21 +363,6 @@ __PACKAGE__->has_many(
   undef,
 );
 
-=head2 buildstepoutputs
-
-Type: has_many
-
-Related object: L<Hydra::Schema::Result::BuildStepOutputs>
-
-=cut
-
-__PACKAGE__->has_many(
-  "buildstepoutputs",
-  "Hydra::Schema::Result::BuildStepOutputs",
-  { "foreign.build" => "self.id" },
-  undef,
-);
-
 =head2 buildsteps
 
 Type: has_many
@@ -497,8 +482,8 @@ __PACKAGE__->many_to_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07049 @ 2022-01-10 09:43:38
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:DQF8KRinnf0imJOP+lvH9Q
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:XYL73NgUnsV/XCXzIKyozQ
 
 __PACKAGE__->has_many(
   "dependents",
