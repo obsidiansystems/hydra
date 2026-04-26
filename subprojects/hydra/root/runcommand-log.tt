@@ -1,6 +1,6 @@
 [% WRAPPER layout.tt
-  titleHTML="RunCommand log of " _ (step ? " step $step.stepnr of " : "") _ "build ${build.id} of job " _ linkToJob(build.jobset, job)
-  title="RunCommand log of " _ (step ? " step $step.stepnr of " : "") _ "build ${build.id} of job " _ makeNameTextForJob(build.jobset, job)
+  titleHTML="RunCommand log of " _ (step ? " attempt $step.attempt of " _ step.drvpath.remove('^.*/') _ " of job " : "build ${build.id} of job ") _ linkToJob(build.jobset, job)
+  title="RunCommand log of " _ (step ? " attempt $step.attempt of " _ step.drvpath.remove('^.*/') _ " of job " : "build ${build.id} of job ") _ makeNameTextForJob(build.jobset, job)
 %]
 [% PROCESS common.tt %]
 

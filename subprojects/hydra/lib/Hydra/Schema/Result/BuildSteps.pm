@@ -56,6 +56,12 @@ __PACKAGE__->table("buildsteps");
   data_type: 'text'
   is_nullable: 0
 
+=head2 attempt
+
+  data_type: 'integer'
+  default_value: 0
+  is_nullable: 0
+
 =head2 busy
 
   data_type: 'integer'
@@ -129,6 +135,8 @@ __PACKAGE__->add_columns(
   { data_type => "integer", is_nullable => 0 },
   "drvpath",
   { data_type => "text", is_nullable => 0 },
+  "attempt",
+  { data_type => "integer", default_value => 0, is_nullable => 0 },
   "busy",
   { data_type => "integer", is_nullable => 0 },
   "status",
@@ -168,6 +176,22 @@ __PACKAGE__->add_columns(
 =cut
 
 __PACKAGE__->set_primary_key("build", "stepnr");
+
+=head1 UNIQUE CONSTRAINTS
+
+=head2 C<buildsteps_drvpath_attempt_key>
+
+=over 4
+
+=item * L</drvpath>
+
+=item * L</attempt>
+
+=back
+
+=cut
+
+__PACKAGE__->add_unique_constraint("buildsteps_drvpath_attempt_key", ["drvpath", "attempt"]);
 
 =head1 RELATIONS
 

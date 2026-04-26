@@ -113,7 +113,7 @@ impl db::RetryableError for StateError {
 
 pub use build::{Build, BuildOutput, BuildResultState, BuildTimings, Builds, RemoteBuild};
 use harmonia_store_derivation::derivation::Derivation;
-use harmonia_store_path::StorePath;
+use harmonia_store_path::{StoreDir, StorePath};
 pub use jobset::{Jobset, JobsetID, Jobsets};
 pub use machine::{Machine, Message as MachineMessage, Pressure, Stats as MachineStats};
 pub use queue::{BuildQueueStats, Queues};
@@ -607,14 +607,12 @@ impl State {
                     // Reconcile this machine's own orphaned buildstep row so
                     // the DB does not keep showing it busy until the next
                     // queue-runner restart.
-                    if let Err(e) = self
-                        .abort_orphaned_build_step(job.build_id, job.step_nr)
-                        .await
+                    if let Some(attempt) = job.attempt
+                        && let Err(e) = self.abort_orphaned_build_step(&job.path, attempt).await
                     {
                         tracing::error!(
-                            "Failed to clear orphaned busy step build_id={} step_nr={} e={e}",
-                            job.build_id,
-                            job.step_nr,
+                            "Failed to clear orphaned busy step drv={} attempt={attempt} e={e}",
+                            job.path,
                         );
                     }
                 }
@@ -637,23 +635,29 @@ impl State {
 
     async fn abort_orphaned_build_step(
         &self,
-        build_id: BuildID,
-        step_nr: i32,
+        drv_path: &StorePath,
+        attempt: i32,
     ) -> Result<(), db::Error> {
-        self.finalize_orphaned_build_step(build_id, step_nr, BuildStatus::Aborted)
+        self.finalize_orphaned_build_step(drv_path, attempt, BuildStatus::Aborted)
             .await
     }
 
     async fn finalize_orphaned_build_step(
         &self,
-        build_id: BuildID,
-        step_nr: i32,
+        drv_path: &StorePath,
+        attempt: i32,
         status: BuildStatus,
     ) -> Result<(), db::Error> {
         let stop_time = i32::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
         let mut db = self.db.get().await?;
-        db.clear_busy_step(build_id, step_nr, stop_time, status)
-            .await?;
+        db.clear_busy_step(
+            self.connector.store_dir(),
+            drv_path,
+            attempt,
+            stop_time,
+            status,
+        )
+        .await?;
         Ok(())
     }
 
@@ -686,9 +690,9 @@ impl State {
         let guard = StepGuard {
             db: self.db.clone(),
             queues: self.queues.clone(),
+            store_dir: self.connector.store_dir().clone(),
             drv: drv_path.clone(),
-            build_id: job.build_id,
-            step_nr: job.step_nr,
+            attempt: job.attempt,
             armed: true,
         };
         Ok((guard, item, job))
@@ -697,7 +701,7 @@ impl State {
     /// A builder reported for a step it no longer owns. Drop its defunct job to
     /// free the slot and finalize its duplicate buildstep row with the status
     /// the builder actually reported. The current owner's step has a different
-    /// stepnr and is left untouched.
+    /// attempt and is left untouched.
     async fn reconcile_stale_reporter(
         &self,
         machine_id: uuid::Uuid,
@@ -710,14 +714,14 @@ impl State {
         let Some(stale) = machine.remove_job(drv_path) else {
             return;
         };
-        if let Err(e) = self
-            .finalize_orphaned_build_step(stale.build_id, stale.step_nr, reported)
-            .await
+        if let Some(attempt) = stale.attempt
+            && let Err(e) = self
+                .finalize_orphaned_build_step(&stale.path, attempt, reported)
+                .await
         {
             tracing::error!(
-                "Failed to clear duplicate busy step build_id={} step_nr={} e={e}",
-                stale.build_id,
-                stale.step_nr,
+                "Failed to clear duplicate busy step drv={} attempt={attempt} e={e}",
+                stale.path,
             );
         }
     }
@@ -731,9 +735,9 @@ impl State {
 struct StepGuard {
     db: db::Database,
     queues: Queues,
+    store_dir: StoreDir,
     drv: StorePath,
-    build_id: BuildID,
-    step_nr: i32,
+    attempt: Option<i32>,
     armed: bool,
 }
 
@@ -750,26 +754,34 @@ impl Drop for StepGuard {
         }
         let db = self.db.clone();
         let queues = self.queues.clone();
-        let build_id = self.build_id;
-        let step_nr = self.step_nr;
+        let store_dir = self.store_dir.clone();
+        let attempt = self.attempt;
         let drv = self.drv.clone();
         tokio::spawn(async move {
             tracing::warn!(
-                "step guard dropped while armed; reconciling build_id={build_id} step_nr={step_nr} drv={drv}"
+                "step guard dropped while armed; reconciling drv={drv} attempt={attempt:?}"
             );
-            let stop_time = i32::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
-            match db.get().await {
-                Ok(mut conn) => {
-                    if let Err(e) = conn
-                        .clear_busy_step(build_id, step_nr, stop_time, BuildStatus::Aborted)
-                        .await
-                    {
-                        tracing::error!(
-                            "step claim drop: clear_busy_step build_id={build_id} step_nr={step_nr} e={e}"
-                        );
+            if let Some(attempt) = attempt {
+                let stop_time = i32::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
+                match db.get().await {
+                    Ok(mut conn) => {
+                        if let Err(e) = conn
+                            .clear_busy_step(
+                                &store_dir,
+                                &drv,
+                                attempt,
+                                stop_time,
+                                BuildStatus::Aborted,
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                "step claim drop: clear_busy_step drv={drv} attempt={attempt} e={e}"
+                            );
+                        }
                     }
+                    Err(e) => tracing::error!("step claim drop: db.get drv={drv} e={e}"),
                 }
-                Err(e) => tracing::error!("step claim drop: db.get build_id={build_id} e={e}"),
             }
             queues.remove_job_from_scheduled(&drv).await;
         });
@@ -839,6 +851,18 @@ impl State {
                 return Ok(RealiseStepResult::MaybeCancelled);
             }
 
+            // TODO someday we will drop the build ID from the build step table,
+            // and then this will not be necessary. Rather than caching "an
+            // arbitrary build build is reachable from this graph?" we will
+            // simply have the graph in the database, and anyone that is
+            // currious can look up that information themselves.
+            //
+            // I, @Ericson2314, suspect that no one needs that information. And
+            // thus it is not worth caching.
+            //
+            // (it could be used for scheduilng, but it is not very good for
+            // scheduling, since the build chosen is arbitrary among the
+            // reachable ones).
             let Some(build) = dependents
                 .iter()
                 .find(|b| &b.drv_path == drv)
@@ -873,10 +897,9 @@ impl State {
             }
             build.clone()
         };
-
         let build_id = build.id;
 
-        let mut job = machine::Job::new(build_id, drv.to_owned());
+        let mut job = machine::Job::new(drv.to_owned());
         job.result.set_start_time_now();
         if self.check_cached_failure(step_info.step.clone()).await {
             job.result.step_status = BuildStatus::CachedFailure;
@@ -1092,10 +1115,10 @@ impl State {
 
         // Input resolution succeeded; create the Busy row now that the step
         // will be dispatched and finalized by succeed_step/fail_step.
-        let step_nr = {
+        let attempt = {
             let _step_lock = self.build_step_lock(build_id).lock().await;
             let mut tx = db.begin_transaction().await?;
-            let step_nr = tx
+            let attempt = tx
                 .create_build_step(
                     self.connector.store_dir(),
                     Some(job.result.get_start_time_as_i32()?),
@@ -1115,63 +1138,65 @@ impl State {
                 )
                 .await?;
             tx.commit().await?;
-            step_nr
+            attempt
         };
-        job.step_nr = step_nr;
+        job.attempt = Some(attempt);
 
         // Finalize the Busy row if dispatch fails below; otherwise it lingers
-        // busy until restart while the step is re-dispatched under a new stepnr.
+        // busy until restart while the step is re-dispatched under a new attempt.
         let dispatch_result: Result<(), StateError> = async {
-        {
-            let mut tx = db.begin_transaction().await?;
-            tx.notify_build_started(build_id).await?;
-            tx.commit().await?;
-        }
-        tracing::info!(
-            "Submitting build drv={drv} on machine={} hostname={} build_id={build_id} step_nr={}",
-            machine.id,
-            machine.hostname,
-            job.step_nr,
-        );
-        self.db
-            .get()
-            .await?
-            .update_build_step(db::models::UpdateBuildStep {
-                build_id,
-                step_nr: job.step_nr,
-                status: db::models::StepStatus::Connecting,
-            })
-            .await?;
-        machine
-            .build_drv(
-                job,
-                drv.clone(),
-                default_max_log_size,
-                self.config.max_output_size(),
-                max_silent_time,
-                build_timeout,
-                // TODO: cleanup
-                if self.config.use_presigned_uploads() {
-                    let remote_stores = self.remote_stores.read();
-                    remote_stores.iter().find_map(|s| match s {
-                        RemoteStoreBackend::S3(s) => Some(hydra_proto::PresignedUploadOpts {
-                            upload_debug_info: s.cfg.write_debug_info,
-                        }),
-                        RemoteStoreBackend::NixCopy(_) => None,
-                    })
-                } else {
-                    None
-                },
-                resolved_drv,
-            )
-            .await?;
-        Ok(())
+            {
+                let mut tx = db.begin_transaction().await?;
+                tx.notify_build_started(build_id).await?;
+                tx.commit().await?;
+            }
+            tracing::info!(
+                "Submitting build drv={drv} on machine={} hostname={} attempt={attempt}",
+                machine.id,
+                machine.hostname,
+            );
+            self.db
+                .get()
+                .await?
+                .update_build_step(
+                    self.store.store_dir(),
+                    db::models::UpdateBuildStep {
+                        drv_path: drv,
+                        attempt,
+                        status: db::models::StepStatus::Connecting,
+                    },
+                )
+                .await?;
+            machine
+                .build_drv(
+                    job,
+                    drv.clone(),
+                    default_max_log_size,
+                    self.config.max_output_size(),
+                    max_silent_time,
+                    build_timeout,
+                    // TODO: cleanup
+                    if self.config.use_presigned_uploads() {
+                        let remote_stores = self.remote_stores.read();
+                        remote_stores.iter().find_map(|s| match s {
+                            RemoteStoreBackend::S3(s) => Some(hydra_proto::PresignedUploadOpts {
+                                upload_debug_info: s.cfg.write_debug_info,
+                            }),
+                            RemoteStoreBackend::NixCopy(_) => None,
+                        })
+                    } else {
+                        None
+                    },
+                    resolved_drv,
+                )
+                .await?;
+            Ok(())
         }
         .await;
         if let Err(e) = dispatch_result {
-            if let Err(e2) = self.abort_orphaned_build_step(build_id, step_nr).await {
+            if let Err(e2) = self.abort_orphaned_build_step(drv, attempt).await {
                 tracing::error!(
-                    "Failed to clear busy step after dispatch failure build_id={build_id} step_nr={step_nr} e={e2}"
+                    "Failed to clear busy step after dispatch failure drv={drv} attempt={attempt} e={e2}"
                 );
             }
             return Err(e);
@@ -1827,28 +1852,31 @@ impl State {
         machine_id: uuid::Uuid,
         step_status: db::models::StepStatus,
     ) -> Result<(), db::Error> {
-        let build_id_and_step_nr = self.machines.get_machine_by_id(machine_id).and_then(|m| {
+        let drv_and_attempt = self.machines.get_machine_by_id(machine_id).and_then(|m| {
             tracing::debug!(
                 "get job from machine by build_id: build_id={build_id} m={}",
                 m.id
             );
-            m.get_build_id_and_step_nr_by_uuid(build_id)
+            m.get_drv_path_and_attempt_by_uuid(build_id)
         });
 
-        let Some((build_id, step_nr)) = build_id_and_step_nr else {
+        let Some((drv_path, attempt)) = drv_and_attempt else {
             tracing::warn!(
-                "Failed to find job with build_id and step_nr for build_id={build_id:?} machine_id={machine_id:?}."
+                "Failed to find job for build_id={build_id:?} machine_id={machine_id:?}."
             );
             return Ok(());
         };
         self.db
             .get()
             .await?
-            .update_build_step(db::models::UpdateBuildStep {
-                build_id,
-                step_nr,
-                status: step_status,
-            })
+            .update_build_step(
+                self.store.store_dir(),
+                db::models::UpdateBuildStep {
+                    drv_path: &drv_path,
+                    attempt,
+                    status: step_status,
+                },
+            )
             .await?;
         Ok(())
     }
@@ -1930,8 +1958,8 @@ impl State {
         finish_build_step(
             &self.db,
             self.connector.store_dir(),
-            job.build_id,
-            job.step_nr,
+            &job.path,
+            job.attempt.expect("attempt set after create_build_step"),
             &job.result,
             Some(&item.machine.hostname),
             Some(&output.outputs),
@@ -2092,13 +2120,17 @@ impl State {
         }
 
         {
+            let attempt = job.attempt.expect("attempt set after create_build_step");
             let start_time = job.result.get_start_time_as_i32()?;
             let stop_time = job.result.get_stop_time_as_i32()?;
             crate::utils::with_serialization_retry("succeed_step", || async {
                 let mut db = self.db.get().await?;
                 let mut tx = db.begin_transaction().await?;
+                let owning_build_id = tx
+                    .get_build_id_for_step(self.connector.store_dir(), &job.path, attempt)
+                    .await?;
                 for b in &direct {
-                    let is_cached = job.build_id != b.id || job.result.is_cached;
+                    let is_cached = owning_build_id != Some(b.id) || job.result.is_cached;
                     tx.mark_succeeded_build(
                         get_mark_build_sccuess_data(b, &output),
                         is_cached,
@@ -2265,8 +2297,8 @@ impl State {
                 finish_build_step(
                     &self.db,
                     self.connector.store_dir(),
-                    job.build_id,
-                    job.step_nr,
+                    &job.path,
+                    job.attempt.expect("attempt set after create_build_step"),
                     &job.result,
                     Some(&item.machine.hostname),
                     None,
@@ -2365,18 +2397,31 @@ impl State {
             job.result.set_stop_time_now();
         }
 
-        if job.step_nr != 0 {
+        if let Some(attempt) = job.attempt {
             finish_build_step(
                 &self.db,
                 self.connector.store_dir(),
-                job.build_id,
-                job.step_nr,
+                &job.path,
+                attempt,
                 &job.result,
                 machine.as_ref().map(|m| m.hostname.as_str()),
                 None,
             )
             .await?;
         }
+
+        // Look up which build owns the step (if one was created).
+        let owning_build_id = if let Some(attempt) = job.attempt {
+            let mut db = self.db.get().await?;
+            let mut tx = db.begin_transaction().await?;
+            let id = tx
+                .get_build_id_for_step(self.store.store_dir(), &job.path, attempt)
+                .await?;
+            tx.commit().await?;
+            id
+        } else {
+            None
+        };
 
         let mut dependent_ids = Vec::new();
         let mut step_finished = false;
@@ -2399,7 +2444,7 @@ impl State {
                         && &b.drv_path == step.get_drv_path())
                         || ((job.result.step_status != BuildStatus::CachedFailure
                             && job.result.step_status != BuildStatus::Unsupported)
-                            && job.build_id == b.id)
+                            && owning_build_id == Some(b.id))
                         || b.get_finished_in_db()
                     {
                         continue;
@@ -2417,10 +2462,10 @@ impl State {
                             .unwrap_or_default(),
                         job.result.step_status,
                         job.result.error_msg.clone(),
-                        if job.build_id == b.id {
+                        if owning_build_id == Some(b.id) {
                             None
                         } else {
-                            Some(job.build_id)
+                            owning_build_id
                         },
                         step.get_output_paths()
                             .unwrap_or_default()
@@ -2487,7 +2532,7 @@ impl State {
         {
             let mut db = self.db.get().await?;
             let mut tx = db.begin_transaction().await?;
-            tx.notify_build_finished(job.build_id, &dependent_ids)
+            tx.notify_build_finished(owning_build_id.unwrap_or(0), &dependent_ids)
                 .await?;
             tx.commit().await?;
         }
@@ -3247,6 +3292,10 @@ impl State {
         let missing_outputs_len = missing_outputs.len();
         let mut stream = futures::StreamExt::map(tokio_stream::iter(missing_outputs), |o| {
             self.metrics.nr_substitutes_started.inc();
+            // TODO: `build.id` is an arbitrary pick — it's just whichever
+            // build's dependency walk discovered this substitution. See the
+            // TODO on `BuildSteps.build` in `hydra.sql` for why this column
+            // exists at all.
             crate::utils::substitute_output(
                 self.db.clone(),
                 &self.store,
@@ -3551,17 +3600,7 @@ impl State {
                 continue;
             }
 
-            // Find the build that has this step as the top-level (if any).
-            let Some(build) = dependents
-                .iter()
-                .find(|b| &b.drv_path == drv)
-                .or_else(|| dependents.iter().next())
-            else {
-                // this should never happen, as we checked is_empty above and fallback is just any build
-                continue;
-            };
-
-            let mut job = machine::Job::new(build.id, drv.to_owned());
+            let mut job = machine::Job::new(drv.to_owned());
             job.result.set_start_and_stop(now);
             job.result.step_status = BuildStatus::Unsupported;
             job.result.error_msg = Some(format!(

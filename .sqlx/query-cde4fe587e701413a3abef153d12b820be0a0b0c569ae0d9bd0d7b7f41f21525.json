@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT s.build FROM buildsteps s\n            JOIN BuildStepOutputs o\n              ON s.build = o.build\n              AND s.stepnr = o.stepnr\n            WHERE s.startTime != 0\n              AND s.stopTime != 0\n              AND s.status = 1\n              AND o.path = $1\n            ORDER BY s.attempt DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "build",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cde4fe587e701413a3abef153d12b820be0a0b0c569ae0d9bd0d7b7f41f21525"
+}

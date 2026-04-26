@@ -10,19 +10,29 @@ use File::Basename;
 use WWW::Form::UrlEncoded::PP qw();
 
 
-sub buildStepChain :Chained('/build/buildChain') :PathPart('step') :CaptureArgs(1) {
-    my ($self, $c, $stepnr) = @_;
+# Canonical route: /step/{drvPath_basename}/{attempt}
+sub stepByDrvPathChain :Chained('/') :PathPart('step') :CaptureArgs(2) {
+    my ($self, $c, $drvPathBasename, $attempt) = @_;
 
-    my $step = $c->stash->{build}->buildsteps->find({stepnr => $stepnr});
-    notFound($c, "Build doesn't have a build step $stepnr.") if !defined $step;
+    my $drvPath = "/nix/store/$drvPathBasename";
+
+    my $step = $c->model('DB::BuildSteps')->find({
+        drvpath => $drvPath,
+        attempt => $attempt,
+    });
+    notFound($c, "Build step not found for $drvPath attempt $attempt.") if !defined $step;
 
     $c->stash->{step} = $step;
+    $c->stash->{build} = $step->build;
+    $c->stash->{job} = $step->build->job;
+    $c->stash->{jobset} = $step->build->jobset;
+    $c->stash->{project} = $step->build->project;
 }
 
 
-sub buildStep :Chained('buildStepChain') :PathPart('') :Args(0) :ActionClass('REST') { }
+sub buildStepByDrv :Chained('stepByDrvPathChain') :PathPart('') :Args(0) :ActionClass('REST') { }
 
-sub buildStep_GET {
+sub buildStepByDrv_GET {
     my ($self, $c) = @_;
 
     my $step = $c->stash->{step};
@@ -43,7 +53,7 @@ sub buildStep_GET {
 }
 
 
-sub view_nixlog : Chained('buildStepChain') PathPart('log') {
+sub view_nixlog_by_drv : Chained('stepByDrvPathChain') PathPart('log') {
     my ($self, $c, $mode) = @_;
 
     my $step = $c->stash->{step};
@@ -52,11 +62,40 @@ sub view_nixlog : Chained('buildStepChain') PathPart('log') {
     # no log. The step detail page links to the terminal step, whose own
     # log endpoint serves the actual build output.
     if (defined $step->status && $step->status == 13 && $step->resolveddrvpath) {
-        notFound($c, "Build step " . $step->stepnr . " was resolved to another derivation and has no log of its own.");
+        notFound($c, "Attempt " . $step->attempt . " of " . $step->drvpath . " was resolved to another derivation and has no log of its own.");
     }
 
     my $log_uri = $c->uri_for($c->controller('Root')->action_for("log"), [WWW::Form::UrlEncoded::PP::url_encode(basename($step->drvpath))]);
     showLog($c, $mode, $log_uri);
+}
+
+
+# Legacy route: /build/{id}/step/{stepnr} -> redirect to canonical
+sub buildStepChain :Chained('/build/buildChain') :PathPart('step') :CaptureArgs(1) {
+    my ($self, $c, $stepnr) = @_;
+
+    my $step = $c->stash->{build}->buildsteps->find({stepnr => $stepnr});
+    notFound($c, "Build doesn't have a build step $stepnr.") if !defined $step;
+
+    $c->stash->{step} = $step;
+}
+
+
+sub buildStep : Chained('buildStepChain') PathPart('') Args(0) {
+    my ($self, $c) = @_;
+
+    my $step = $c->stash->{step};
+    $c->res->redirect($c->uri_for('/step', basename($step->drvpath), $step->attempt), 301);
+}
+
+
+sub view_nixlog : Chained('buildStepChain') PathPart('log') {
+    my ($self, $c, $mode) = @_;
+
+    my $step = $c->stash->{step};
+    my @path = ('/step', basename($step->drvpath), $step->attempt, 'log');
+    push @path, $mode if defined $mode;
+    $c->res->redirect($c->uri_for(@path), 301);
 }
 
 

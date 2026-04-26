@@ -9,26 +9,23 @@ sub parse :prototype(@) {
         die "step_finished: payload takes exactly three arguments, but ", scalar(@_), " were given";
     }
 
-    my ($build_id, $step_number, $log_path) = @_;
+    my ($drv_path, $attempt, $log_path) = @_;
 
-    unless ($build_id =~ /^\d+$/) {
-        die "step_finished: payload argument build_id should be an integer, but '", $build_id, "' was given"
-    }
-    unless ($step_number =~ /^\d+$/) {
-        die "step_finished: payload argument step_number should be an integer, but '", $step_number, "' was given"
+    unless ($attempt =~ /^\d+$/) {
+        die "step_finished: payload argument attempt should be an integer, but '", $attempt, "' was given"
     }
 
-    return Hydra::Event::StepFinished->new(int($build_id), int($step_number), $log_path);
+    return Hydra::Event::StepFinished->new($drv_path, int($attempt), $log_path);
 }
 
-sub new :prototype($$$) {
-    my ($self, $build_id, $step_number, $log_path) = @_;
+sub new :prototype($$$$) {
+    my ($self, $drv_path, $attempt, $log_path) = @_;
 
     $log_path = undef if $log_path eq "-";
 
     return bless {
-        "build_id" => $build_id,
-        "step_number" => $step_number,
+        "drv_path" => $drv_path,
+        "attempt" => $attempt,
         "log_path" => $log_path,
         "step" => undef,
     }, $self;
@@ -43,11 +40,10 @@ sub load {
     my ($self, $db) = @_;
 
     if (!defined($self->{"step"})) {
-        my $build = $db->resultset('Builds')->find($self->{"build_id"})
-            or die "build $self->{'build_id'} does not exist\n";
-
-        $self->{"step"} = $build->buildsteps->find({stepnr => $self->{"step_number"}})
-            or die "step $self->{'step_number'} does not exist\n";
+        $self->{"step"} = $db->resultset('BuildSteps')->find({
+            drvpath => $self->{"drv_path"},
+            attempt => $self->{"attempt"},
+        }) or die "step not found for $self->{'drv_path'} attempt $self->{'attempt'}\n";
     }
 }
 

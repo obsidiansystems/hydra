@@ -257,27 +257,11 @@ create table BuildOutputs (
 -- for a single step.
 create table BuildSteps (
     build         integer not null,
-    -- The step number uniquely identifies the step within the build. Steps are
-    -- in an order consistent with the dependency order (i.e. need to
-    -- sucessfully build thing we depend on before things we do not.)
-    --
-    -- If we were designing Hydra from scratch today, we would likely not have
-    -- `build` and `stepnr` be part of this table, because `drvPath` and
-    -- `attempt` better reflects the way the current queue runner actually
-    -- works. We keep here, however, because historical jobs, and supporting
-    -- down-migrations.
     stepnr        integer not null,
 
     type          integer not null, -- 0 = build, 1 = substitution
 
     drvPath       text not null,
-    -- The attempt number uniquely identifies the step within the derivation.
-    -- Note that the unique constraint using this disregardes the build (why we
-    -- wanted to build this).
-    --
-    -- This allows us to efficiently look at every time we tried to build a
-    -- derivation.
-    attempt       integer not null default 0,
 
     -- 0 = not busy
     -- 1 = building
@@ -320,9 +304,6 @@ create table BuildSteps (
     resolvedDrvPath  text,
 
     primary key   (build, stepnr),
-    unique        (drvPath, attempt),
-    check         (stepnr > 0),
-    check         (attempt >= 0),
     foreign key   (build) references Builds(id) on delete cascade,
     foreign key   (propagatedFrom) references Builds(id) on delete cascade,
     -- status = 13 (Resolved) iff resolvedDrvPath is set
@@ -330,16 +311,6 @@ create table BuildSteps (
 );
 
 
--- Joined with BuildSteps.drvPath this makes the build trace: which
--- output path a derivation's output actually resolved to. Hydra serves
--- the corresponding `build-trace-v2/` routes as part of its on-the-fly
--- binary cache.
---
--- TODO: signatures. We should store signatures in the database,
--- otherwise these build trace entries cannot be used safely.
---
--- TODO we should migrate from the legacy `(build, stepnr)` to the modern
--- `(drvPath, attempt)` to refer back to the parent build step.
 create table BuildStepOutputs (
     build         integer not null,
     stepnr        integer not null,
