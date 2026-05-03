@@ -1753,11 +1753,22 @@ impl State {
 
         let drv_path_str = self.store.print_store_path(&drv_path);
 
-        // Check if this derivation already exists in the DB
+        // Check if this derivation already exists in the DB.
+        // If it does, check if it was already successfully built — if so,
+        // re-add to BuildStepCanCreate so the build can be marked as cached.
         {
             if let Ok(mut conn) = self.db.get().await {
                 if let Ok(exists) = conn.derivation_exists(&drv_path_str).await {
                     if exists {
+                        // Ensure the step is in the ready queue if all deps are satisfied
+                        // (or it was already built). This handles the case where a previous
+                        // queue runner built the step but this is a new queue runner instance.
+                        #[allow(clippy::cast_possible_truncation)]
+                        let ready_time = jiff::Timestamp::now().as_second() as i32;
+                        if let Ok(mut tx) = conn.begin_transaction().await {
+                            let _ = tx.mark_step_ready_if_deps_satisfied(&drv_path_str, ready_time).await;
+                            let _ = tx.commit().await;
+                        }
                         return CreateStepResult::Valid(drv_path);
                     }
                 }
