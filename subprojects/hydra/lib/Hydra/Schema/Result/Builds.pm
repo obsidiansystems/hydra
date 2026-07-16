@@ -76,11 +76,7 @@ __PACKAGE__->table("builds");
 =head2 drvpath
 
   data_type: 'text'
-  is_nullable: 0
-
-=head2 system
-
-  data_type: 'text'
+  is_foreign_key: 1
   is_nullable: 0
 
 =head2 license
@@ -203,9 +199,7 @@ __PACKAGE__->add_columns(
   "description",
   { data_type => "text", is_nullable => 1 },
   "drvpath",
-  { data_type => "text", is_nullable => 0 },
-  "system",
-  { data_type => "text", is_nullable => 0 },
+  { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "license",
   { data_type => "text", is_nullable => 1 },
   "homepage",
@@ -333,21 +327,6 @@ __PACKAGE__->has_many(
   undef,
 );
 
-=head2 buildoutputs
-
-Type: has_many
-
-Related object: L<Hydra::Schema::Result::BuildOutputs>
-
-=cut
-
-__PACKAGE__->has_many(
-  "buildoutputs",
-  "Hydra::Schema::Result::BuildOutputs",
-  { "foreign.build" => "self.id" },
-  undef,
-);
-
 =head2 buildproducts
 
 Type: has_many
@@ -391,6 +370,21 @@ __PACKAGE__->has_many(
   "Hydra::Schema::Result::BuildSteps",
   { "foreign.propagatedfrom" => "self.id" },
   undef,
+);
+
+=head2 derivation
+
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::Derivations>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "derivation",
+  "Hydra::Schema::Result::Derivations",
+  { path => "drvpath" },
+  { is_deferrable => 0, on_delete => "NO ACTION", on_update => "NO ACTION" },
 );
 
 =head2 jobset
@@ -482,8 +476,8 @@ __PACKAGE__->many_to_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:XYL73NgUnsV/XCXzIKyozQ
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 18:22:32
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Qe7eRy5QgAaAbD7N4giLfA
 
 __PACKAGE__->has_many(
   "dependents",
@@ -511,6 +505,23 @@ __PACKAGE__->many_to_many("jobsetevals", "jobsetevalmembers", "eval");
 
 __PACKAGE__->many_to_many("constituents_", "aggregateconstituents_aggregates", "constituent");
 
+# The system column moved to Derivations; keep the old accessor working.
+sub system {
+    my ($self) = @_;
+    return $self->derivation->system;
+}
+
+# Compatibility relation: BuildOutputs was dropped in favour of
+# DerivationOutputs, which is keyed by drvPath rather than build id.
+# Routing the old relation through drvPath keeps existing readers
+# (`$build->buildoutputs`, `join => ["buildoutputs"]`, ...) working.
+__PACKAGE__->has_many(
+  "buildoutputs",
+  "Hydra::Schema::Result::DerivationOutputs",
+  { "foreign.drvpath" => "self.drvpath" },
+  undef,
+);
+
 sub makeSource {
     my ($name, $query) = @_;
     my $source = __PACKAGE__->result_source_instance();
@@ -523,7 +534,7 @@ sub makeSource {
 sub makeQueries {
     my ($name, $constraint) = @_;
 
-    my $activeJobs = "(select distinct jobset_id, job, system from Builds where isCurrent = 1 $constraint)";
+    my $activeJobs = "(select distinct jobset_id, job, d.system from Builds b join Derivations d on d.path = b.drvPath where isCurrent = 1 $constraint)";
 
     makeSource(
         "LatestSucceeded$name",
@@ -532,9 +543,10 @@ sub makeQueries {
           from
             (select
                (select max(b.id) from builds b
+                join Derivations d on d.path = b.drvPath
                 where
                   jobset_id = activeJobs.jobset_id
-                  and job = activeJobs.job and system = activeJobs.system
+                  and job = activeJobs.job and d.system = activeJobs.system
                   and finished = 1 and buildstatus = 0
                ) as id
              from $activeJobs as activeJobs
@@ -568,13 +580,13 @@ sub as_json {
     jobset => $jobset->name,
     job => $self->get_column('job'),
     nixname => $self->get_column('nixname'),
-    system => $self->get_column('system'),
+    system => $self->derivation->system,
     priority => $self->get_column('priority'),
     buildstatus => $self->get_column('buildstatus'),
     releasename => $self->get_column('releasename'),
     drvpath => $self->get_column('drvpath'),
     jobsetevals => [ map { $_->id } $self->jobsetevals ],
-    buildoutputs => { map { $_->name  => $_ } $self->buildoutputs },
+    buildoutputs => { map { $_->name  => $_ } $self->derivation->derivationoutputs },
     buildproducts => { map { $_->productnr => $_ } $self->buildproducts },
     buildmetrics => { map { $_->name => $_ } $self->buildmetrics },
   };

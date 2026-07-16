@@ -146,7 +146,6 @@ pub struct InsertBuildStep<'a> {
     pub busy: bool,
     pub start_time: Option<i32>,
     pub stop_time: Option<i32>,
-    pub platform: Option<&'a str>,
     pub propagated_from: Option<i32>,
     pub error_msg: Option<&'a str>,
     pub machine: &'a str,
@@ -163,7 +162,6 @@ pub struct InsertResolvedBuildStep<'a> {
     pub build_id: BuildID,
     pub drv_path: &'a StorePath,
     pub start_time: i32,
-    pub platform: Option<&'a str>,
     pub machine: &'a str,
     pub resolved_drv_path: &'a StorePath,
 }

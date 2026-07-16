@@ -238,6 +238,16 @@ impl Connection {
     ) -> crate::Result<()> {
         let drv_path = store_dir.display(drv_path).to_string();
         sqlx::query!(
+            r#"
+            INSERT INTO derivations (path, system) VALUES ($1, $2)
+            ON CONFLICT (path) DO UPDATE SET system = COALESCE(derivations.system, EXCLUDED.system)
+            "#,
+            drv_path.as_str(),
+            system,
+        )
+        .execute(&mut *self.conn)
+        .await?;
+        sqlx::query!(
             r#"INSERT INTO builds (
               finished,
               timestamp,
@@ -245,7 +255,6 @@ impl Connection {
               job,
               nixname,
               drvpath,
-              system,
               maxsilent,
               timeout,
               ischannel,
@@ -260,7 +269,6 @@ impl Connection {
               'debug',
               'debug',
               $2,
-              $3,
               7200,
               36000,
               0,
@@ -270,7 +278,6 @@ impl Connection {
             0);"#,
             jobset_id,
             drv_path,
-            system,
         )
         .execute(&mut *self.conn)
         .await?;
@@ -287,10 +294,17 @@ impl Connection {
             super::models::BuildOutput,
             r#"
             SELECT
+              id AS "id!", buildStatus, releaseName, closureSize, size
+            FROM builds b
+            JOIN derivationoutputs o ON o.drvPath = b.drvPath
+            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1
+            UNION
+            SELECT
               id, buildStatus, releaseName, closureSize, size
             FROM builds b
-            JOIN buildoutputs o on b.id = o.build
-            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = $1;"#,
+            JOIN buildstepoutputs o ON o.drvPath = b.drvPath
+            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1
+            LIMIT 1;"#,
             out_path.as_str(),
         )
         .fetch_optional(&mut *self.conn)
@@ -572,27 +586,6 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, name, path), err)]
-    pub async fn update_build_output(
-        &mut self,
-        store_dir: &StoreDir,
-        build_id: BuildID,
-        name: &str,
-        path: &StorePath,
-    ) -> crate::Result<()> {
-        let path = store_dir.display(path).to_string();
-        // TODO: support inserting multiple at the same time
-        sqlx::query!(
-            "UPDATE buildoutputs SET path = $3 WHERE build = $1 AND name = $2",
-            build_id,
-            name,
-            path.as_str(),
-        )
-        .execute(&mut *self.tx)
-        .await?;
-        Ok(())
-    }
-
     #[tracing::instrument(skip(self), err)]
     pub async fn get_last_build_step_id(
         &mut self,
@@ -671,6 +664,49 @@ impl Transaction<'_> {
         .map(|v| v.build))
     }
 
+    /// Register a derivation and its statically-known outputs. Idempotent:
+    /// an already-registered derivation is left alone, except that a NULL
+    /// system (possible for legacy rows) is healed when we now know one.
+    /// Output paths are static per derivation, so they are never updated;
+    /// floating content-addressed outputs stay NULL and their realized
+    /// paths live in BuildStepOutputs.
+    #[tracing::instrument(skip(self, outputs), err)]
+    pub async fn register_derivation(
+        &mut self,
+        store_dir: &StoreDir,
+        drv_path: &StorePath,
+        system: Option<&str>,
+        outputs: &BTreeMap<OutputName, Option<StorePath>>,
+    ) -> crate::Result<()> {
+        let drv = store_dir.display(drv_path).to_string();
+        sqlx::query!(
+            r#"
+            INSERT INTO derivations (path, system) VALUES ($1, $2)
+            ON CONFLICT (path) DO UPDATE SET system = COALESCE(derivations.system, EXCLUDED.system)
+            "#,
+            drv.as_str(),
+            system,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+
+        for (name, path) in outputs {
+            let path = path.as_ref().map(|p| store_dir.display(p).to_string());
+            sqlx::query!(
+                r#"
+                INSERT INTO derivationoutputs (drvPath, name, path) VALUES ($1, $2, $3)
+                ON CONFLICT DO NOTHING
+                "#,
+                drv.as_str(),
+                name.as_ref(),
+                path.as_deref(),
+            )
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self, step), err)]
     pub async fn insert_build_step(
         &mut self,
@@ -697,13 +733,12 @@ impl Transaction<'_> {
                 busy,
                 startTime,
                 stopTime,
-                system,
                 status,
                 propagatedFrom,
                 errorMsg,
                 machine
               ) VALUES (
-                $1, (SELECT val FROM new_stepnr), $2, $3, (SELECT val FROM new_attempt), $4, $5, $6, $7, $8, $9, $10, $11
+                $1, (SELECT val FROM new_stepnr), $2, $3, (SELECT val FROM new_attempt), $4, $5, $6, $7, $8, $9, $10
               )
               ON CONFLICT DO NOTHING
               RETURNING stepnr, attempt AS "attempt!"
@@ -714,7 +749,6 @@ impl Transaction<'_> {
             i32::from(step.busy),
             step.start_time,
             step.stop_time,
-            step.platform,
             if step.status == BuildStatus::Busy {
                 None
             } else {
@@ -754,12 +788,11 @@ impl Transaction<'_> {
                 busy,
                 startTime,
                 stopTime,
-                system,
                 status,
                 machine,
                 resolvedDrvPath
               ) VALUES (
-                $1, (SELECT val FROM new_stepnr), $2, $3, (SELECT val FROM new_attempt), 0, $4, $4, $5, $6, $7, $8
+                $1, (SELECT val FROM new_stepnr), $2, $3, (SELECT val FROM new_attempt), 0, $4, $4, $5, $6, $7
               )
               ON CONFLICT DO NOTHING
               RETURNING stepnr, attempt AS "attempt!"
@@ -768,7 +801,6 @@ impl Transaction<'_> {
             crate::models::BuildType::Build as i32,
             drv_path.as_str(),
             step.start_time,
-            step.platform,
             BuildStatus::Resolved as i32,
             step.machine,
             step.resolved_drv_path.to_string(),
@@ -1087,6 +1119,8 @@ impl Transaction<'_> {
         propagated_from: Option<BuildID>,
         outputs: BTreeMap<OutputName, Option<StorePath>>,
     ) -> crate::Result<i32> {
+        self.register_derivation(store_dir, drv_path, platform, &outputs)
+            .await?;
         let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
@@ -1103,7 +1137,6 @@ impl Transaction<'_> {
                         } else {
                             start_time
                         },
-                        platform,
                         propagated_from,
                         error_msg: error_msg.as_deref(),
                         machine: &machine,
@@ -1154,6 +1187,8 @@ impl Transaction<'_> {
         resolved_drv_path: &StorePath,
         outputs: BTreeMap<OutputName, Option<StorePath>>,
     ) -> crate::Result<i32> {
+        self.register_derivation(store_dir, drv_path, platform, &outputs)
+            .await?;
         let attempt = loop {
             if let Some(ids) = self
                 .insert_resolved_build_step(
@@ -1162,7 +1197,6 @@ impl Transaction<'_> {
                         build_id,
                         drv_path,
                         start_time,
-                        platform,
                         machine: &machine,
                         resolved_drv_path,
                     },
@@ -1204,6 +1238,14 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         outputs: BTreeMap<OutputName, StorePath>,
     ) -> crate::Result<i32> {
+        {
+            let reg: BTreeMap<OutputName, Option<StorePath>> = outputs
+                .iter()
+                .map(|(n, p)| (n.clone(), Some(p.clone())))
+                .collect();
+            self.register_derivation(store_dir, drv_path, None, &reg)
+                .await?;
+        }
         let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
@@ -1216,7 +1258,6 @@ impl Transaction<'_> {
                         busy: false,
                         start_time: Some(start_time),
                         stop_time: Some(stop_time),
-                        platform: None,
                         propagated_from: None,
                         error_msg: None,
                         machine: "",
@@ -1258,6 +1299,13 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         output: (OutputName, Option<StorePath>),
     ) -> crate::Result<i32> {
+        self.register_derivation(
+            store_dir,
+            drv_path,
+            None,
+            &BTreeMap::from([(output.0.clone(), output.1.clone())]),
+        )
+        .await?;
         let attempt = loop {
             if let Some(ids) = self
                 .insert_build_step(
@@ -1270,7 +1318,6 @@ impl Transaction<'_> {
                         busy: false,
                         start_time: Some(start_time),
                         stop_time: Some(stop_time),
-                        platform: None,
                         propagated_from: None,
                         error_msg: None,
                         machine: "",
@@ -1333,11 +1380,6 @@ impl Transaction<'_> {
             },
         )
         .await?;
-
-        for (name, path) in &build.outputs {
-            self.update_build_output(store_dir, build.id, name.as_ref(), path)
-                .await?;
-        }
 
         self.delete_build_products_by_build_id(build.id).await?;
 
@@ -1931,7 +1973,6 @@ mod tests {
             busy: false,
             start_time: Some(0),
             stop_time: Some(0),
-            platform: None,
             propagated_from: None,
             error_msg: None,
             machine: "",

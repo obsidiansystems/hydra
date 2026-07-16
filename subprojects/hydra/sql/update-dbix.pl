@@ -13,7 +13,6 @@ make_schema_at("Hydra::Schema", {
         "aggregateconstituents" => "AggregateConstituents",
         "buildinputs" => "BuildInputs",
         "buildmetrics" => "BuildMetrics",
-        "buildoutputs" => "BuildOutputs",
         "buildproducts" => "BuildProducts",
         "builds" => "Builds",
         "buildstepoutputs" => "BuildStepOutputs",
@@ -25,6 +24,8 @@ make_schema_at("Hydra::Schema", {
         "cachedhginputs" => "CachedHgInputs",
         "cachedpathinputs" => "CachedPathInputs",
         "cachedsubversioninputs" => "CachedSubversionInputs",
+        "derivationoutputs" => "DerivationOutputs",
+        "derivations" => "Derivations",
         "evaluationerrors" => "EvaluationErrors",
         "failedpaths" => "FailedPaths",
         "jobsetevalinputs" => "JobsetEvalInputs",
@@ -48,5 +49,10 @@ make_schema_at("Hydra::Schema", {
         "users" => "Users",
     } , #sub { return "$_"; },
     components => [ "+Hydra::Component::ToJSON" ],
-    rel_name_map => { buildsteps_builds => "buildsteps" }
+    rel_name_map => {
+        buildsteps_builds => "buildsteps",
+        # The drvPath foreign keys into Derivations must not shadow the
+        # drvpath *column* accessors, which the whole app reads as text.
+        drvpath => "derivation",
+    }
 }, [$ARGV[0]]);

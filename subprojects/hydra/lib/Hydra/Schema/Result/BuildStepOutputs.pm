@@ -50,6 +50,7 @@ __PACKAGE__->table("buildstepoutputs");
 =head2 name
 
   data_type: 'text'
+  is_foreign_key: 1
   is_nullable: 0
 
 =head2 path
@@ -65,7 +66,7 @@ __PACKAGE__->add_columns(
   "attempt",
   { data_type => "integer", is_foreign_key => 1, is_nullable => 0 },
   "name",
-  { data_type => "text", is_nullable => 0 },
+  { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "path",
   { data_type => "text", is_nullable => 1 },
 );
@@ -103,9 +104,39 @@ __PACKAGE__->belongs_to(
   { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
 );
 
+=head2 derivation
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:ERMZNrSYz2lMLBuyMiZcuQ
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::Derivations>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "derivation",
+  "Hydra::Schema::Result::Derivations",
+  { path => "drvpath" },
+  { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
+);
+
+=head2 derivationoutput
+
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::DerivationOutputs>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "derivationoutput",
+  "Hydra::Schema::Result::DerivationOutputs",
+  { drvpath => "drvpath", name => "name" },
+  { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
+);
+
+
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 18:22:32
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:0kSMfEDQyeYXPb+CNn/CoQ
 
 
 # You can replace this text with custom code or comments, and it will be preserved on regeneration

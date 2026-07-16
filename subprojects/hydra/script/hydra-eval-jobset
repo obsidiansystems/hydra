@@ -545,6 +545,13 @@ sub checkBuild {
             return join(", ", @strings) || undef;
         }
 
+        # Register the derivation first; the build row references it. A
+        # NULL system from a legacy row is healed if we now know one.
+        $db->storage->dbh->do(
+            "insert into Derivations (path, system) values (?, ?) " .
+            "on conflict (path) do update set system = coalesce(Derivations.system, excluded.system)",
+            undef, $drvPath, $buildInfo->{system});
+
         # Add the build to the database.
         $build = $jobset->builds->create(
             { timestamp => $time
@@ -558,17 +565,16 @@ sub checkBuild {
             , timeout => getMeta($buildInfo->{meta}->{timeout}, undef)
             , nixname => $buildInfo->{name}
             , drvpath => $drvPath
-            , system => $buildInfo->{system}
             , priority => getMeta($buildInfo->{meta}->{schedulingPriority}, 100)
             , finished => 0
             , iscurrent => 1
             , ischannel => getMeta($buildInfo->{meta}->{isChannel}, 0)
             });
 
-        # Output rows are inserted in bulk by the caller (see populate below);
+        # Output rows are inserted in bulk by the caller (see below);
         # row-at-a-time creates dominate eval insertion time on large jobsets.
         $buildMap->{$build->id} = { id => $build->id, jobName => $jobName, new => 1, drvPath => $drvPath
-                                  , outputs => [ map { { build => $build->id, name => $_, path => $buildInfo->{outputs}->{$_} } } @outputNames ] };
+                                  , outputs => [ map { { drvpath => $drvPath, name => $_, path => $buildInfo->{outputs}->{$_} } } @outputNames ] };
         $$jobOutPathMap{$jobName . "\t" . $firstOutputPath} = $build->id;
 
         $db->storage->dbh->do("notify build_queued, ?", undef, $build->id);
@@ -890,8 +896,18 @@ sub checkJobsetWrapped {
         }
 
         # Bulk-insert the outputs of all new builds in one statement.
-        my @outputRows = map { @{$_->{outputs} // []} } values %buildMap;
-        $db->resultset('BuildOutputs')->populate(\@outputRows) if @outputRows;
+        # Distinct jobs may alias the same derivation, and a derivation may
+        # already be registered by an earlier eval, so conflicts are expected
+        # and ignored (output paths are static per derivation).
+        my %outputRows = map { $_->{drvpath} . "\t" . $_->{name} => $_ }
+            map { @{$_->{outputs} // []} } values %buildMap;
+        if (my @outputRows = values %outputRows) {
+            my $placeholders = join(", ", ("(?, ?, ?)") x scalar @outputRows);
+            $db->storage->dbh->do(
+                "insert into DerivationOutputs (drvPath, name, path) values $placeholders " .
+                "on conflict do nothing",
+                undef, map { ($_->{drvpath}, $_->{name}, $_->{path}) } @outputRows);
+        }
 
         # Have any builds been added or removed since last time?
         $jobsetChanged =

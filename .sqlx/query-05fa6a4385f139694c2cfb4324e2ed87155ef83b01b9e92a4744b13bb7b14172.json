@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n              id AS \"id!\", buildStatus, releaseName, closureSize, size\n            FROM builds b\n            JOIN derivationoutputs o ON o.drvPath = b.drvPath\n            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1\n            UNION\n            SELECT\n              id, buildStatus, releaseName, closureSize, size\n            FROM builds b\n            JOIN buildstepoutputs o ON o.drvPath = b.drvPath\n            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1\n            LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "buildstatus",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "releasename",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "closuresize",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "size",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "05fa6a4385f139694c2cfb4324e2ed87155ef83b01b9e92a4744b13bb7b14172"
+}

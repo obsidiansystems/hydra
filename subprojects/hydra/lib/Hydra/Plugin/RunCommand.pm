@@ -169,7 +169,7 @@ sub makeJsonPayload {
         stopTime => $build->get_column('stoptime'),
         buildStatus => $build->get_column('buildstatus'),
         nixName => $build->get_column('nixname'),
-        system => $build->get_column('system'),
+        system => $build->system,
         homepage => $build->get_column('homepage'),
         description => $build->get_column('description'),
         license => $build->get_column('license'),

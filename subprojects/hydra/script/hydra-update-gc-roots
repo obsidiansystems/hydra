@@ -25,8 +25,8 @@ sub addRoot {
 
 
 my @columns =
-    ( "id", "jobset_id", "job", "system", "finished", "drvpath", "timestamp", "buildstatus"
-    , { "outpaths" => \ "(select string_agg(path, ' ') from BuildOutputs where build = me.id)" }
+    ( "id", "jobset_id", "job", "finished", "drvpath", "timestamp", "buildstatus"
+    , { "outpaths" => \ "(select string_agg(path, ' ') from DerivationOutputs where drvPath = me.drvPath)" }
     );
 
 my %seenBuilds;

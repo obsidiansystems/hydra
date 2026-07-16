@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO derivationoutputs (drvPath, name, path) VALUES ($1, $2, $3)\n                ON CONFLICT DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3dcc2f8b6ce79d351c0daf46a9bc36112f8739116742787745b06708898119d2"
+}

@@ -164,7 +164,9 @@ sub queue_summary :Local :Path('queue-summary') :Args(0) {
         { Slice => {} });
 
     $c->stash->{systems} = dbh($c)->selectall_arrayref(
-        "select system, count(*) as c from Builds where finished = 0 group by system order by c desc",
+        "select d.system as system, count(*) as c from Builds b " .
+        "join Derivations d on d.path = b.drvPath " .
+        "where finished = 0 group by d.system order by c desc",
         { Slice => {} });
 }
 
@@ -217,8 +219,9 @@ sub machines :Local Args(0) {
 
     $c->stash->{machines} = $machines;
     $c->stash->{steps} = dbh($c)->selectall_arrayref(
-        "select s.system as system, s.drvpath as drvpath, s.attempt as attempt, machine, s.starttime as starttime, s.busy as busy " .
+        "select d.system as system, s.drvpath as drvpath, s.attempt as attempt, machine, s.starttime as starttime, s.busy as busy " .
         "from BuildSteps s " .
+        "join Derivations d on d.path = s.drvpath " .
         "where busy != 0 order by machine, s.starttime asc",
         { Slice => {} });
     $c->stash->{template} = 'machine-status.tt';

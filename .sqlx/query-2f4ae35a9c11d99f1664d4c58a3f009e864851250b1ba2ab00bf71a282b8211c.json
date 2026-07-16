@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO derivations (path, system) VALUES ($1, $2)\n            ON CONFLICT (path) DO UPDATE SET system = COALESCE(derivations.system, EXCLUDED.system)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2f4ae35a9c11d99f1664d4c58a3f009e864851250b1ba2ab00bf71a282b8211c"
+}

@@ -54,6 +54,7 @@ __PACKAGE__->table("buildsteps");
 =head2 drvpath
 
   data_type: 'text'
+  is_foreign_key: 1
   is_nullable: 0
 
 =head2 attempt
@@ -93,11 +94,6 @@ __PACKAGE__->table("buildsteps");
   default_value: (empty string)
   is_nullable: 0
 
-=head2 system
-
-  data_type: 'text'
-  is_nullable: 1
-
 =head2 propagatedfrom
 
   data_type: 'integer'
@@ -134,7 +130,7 @@ __PACKAGE__->add_columns(
   "type",
   { data_type => "integer", is_nullable => 0 },
   "drvpath",
-  { data_type => "text", is_nullable => 0 },
+  { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "attempt",
   { data_type => "integer", default_value => 0, is_nullable => 0 },
   "busy",
@@ -149,8 +145,6 @@ __PACKAGE__->add_columns(
   { data_type => "integer", is_nullable => 1 },
   "machine",
   { data_type => "text", default_value => "", is_nullable => 0 },
-  "system",
-  { data_type => "text", is_nullable => 1 },
   "propagatedfrom",
   { data_type => "integer", is_foreign_key => 1, is_nullable => 1 },
   "overhead",
@@ -228,6 +222,21 @@ __PACKAGE__->has_many(
   undef,
 );
 
+=head2 derivation
+
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::Derivations>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "derivation",
+  "Hydra::Schema::Result::Derivations",
+  { path => "drvpath" },
+  { is_deferrable => 0, on_delete => "NO ACTION", on_update => "NO ACTION" },
+);
+
 =head2 propagatedfrom
 
 Type: belongs_to
@@ -249,8 +258,14 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-04-25 21:19:23
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:MsMR4xOqa6ADmMI5OucvtA
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 18:22:32
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:PKAdd/Etj0uRcze6PrpQNg
+
+# The system column moved to Derivations; keep the old accessor working.
+sub system {
+    my ($self) = @_;
+    return $self->derivation->system;
+}
 
 use File::Basename ();
 
@@ -301,7 +316,6 @@ sub resolution_origins {
 my %hint = (
     columns => [
         "machine",
-        "system",
         "stepnr",
         "drvpath",
         "starttime",

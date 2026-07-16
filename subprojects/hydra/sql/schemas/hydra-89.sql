@@ -156,27 +156,6 @@ create table JobsetInputAlts (
 );
 
 
-create table Derivations (
-    path          text primary key not null,
-    -- TODO: make NOT NULL once the legacy rows are dealt with:
-    -- historical Some historical rows (never in the old `BuildOutputs`,
-    -- sometimes in the old `BuildStepOutputs`) had a missing
-    -- system, and I don't yet know why.
-    system        text
-);
-
-
-create table DerivationOutputs (
-    drvPath       text not null references Derivations(path) on delete cascade,
-    name          text not null,
-    -- Only statically-known paths; floating content-addressed paths
-    -- that are not known until a successful build do not go here; NULL
-    -- is used instead to indicate the path is unknown.
-    path          text,
-    primary key   (drvPath, name)
-);
-
-
 create table Builds (
     id            serial primary key not null,
 
@@ -191,7 +170,8 @@ create table Builds (
     -- Info about the build result.
     nixName       text, -- name attribute of the derivation
     description   text, -- meta.description
-    drvPath       text not null references Derivations(path),
+    drvPath       text not null,
+    system        text not null,
 
     license       text, -- meta.license
     homepage      text, -- meta.homepage
@@ -264,6 +244,15 @@ create trigger BuildBumped after update on Builds for each row
   when (old.globalPriority != new.globalPriority) execute procedure notifyBuildBumped();
 
 
+create table BuildOutputs (
+    build         integer not null,
+    name          text not null,
+    path          text,
+    primary key   (build, name),
+    foreign key   (build) references Builds(id) on delete cascade
+);
+
+
 -- TODO: normalize this. Currently there can be multiple BuildSteps
 -- for a single step.
 create table BuildSteps (
@@ -281,7 +270,7 @@ create table BuildSteps (
 
     type          integer not null, -- 0 = build, 1 = substitution
 
-    drvPath       text not null references Derivations(path),
+    drvPath       text not null,
     -- The attempt number uniquely identifies the step within the derivation.
     -- Note that the unique constraint using this disregardes the build (why we
     -- wanted to build this).
@@ -307,6 +296,7 @@ create table BuildSteps (
     stopTime      integer,
 
     machine       text not null default '',
+    system        text,
 
     propagatedFrom integer,
 
@@ -348,15 +338,12 @@ create table BuildSteps (
 -- TODO: signatures. We should store signatures in the database,
 -- otherwise these build trace entries cannot be used safely.
 create table BuildStepOutputs (
-    -- Redundant with the two composite foreign keys below (both target
-    -- tables reference Derivations), but kept for documentation.
-    drvPath       text not null references Derivations(path) on delete cascade,
+    drvPath       text not null,
     attempt       integer not null,
     name          text not null,
     path          text,
     primary key   (drvPath, attempt, name),
-    foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade,
-    foreign key   (drvPath, name) references DerivationOutputs(drvPath, name) on delete cascade
+    foreign key   (drvPath, attempt) references BuildSteps(drvPath, attempt) on delete cascade
 );
 
 
@@ -744,7 +731,7 @@ create index IndexJobsetEvalMembersOnEval on JobsetEvalMembers(eval);
 create index IndexJobsetInputAltsOnInput on JobsetInputAlts(project, jobset, input);
 create index IndexJobsetInputAltsOnJobset on JobsetInputAlts(project, jobset);
 create index IndexProjectsOnEnabled on Projects(enabled);
-create index IndexDerivationOutputsPath on DerivationOutputs using hash(path);
+create index IndexBuildOutputsPath on BuildOutputs using hash(path);
 
 
 --  For hydra-update-gc-roots.

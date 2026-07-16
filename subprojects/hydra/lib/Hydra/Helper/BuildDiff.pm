@@ -12,7 +12,7 @@ our @EXPORT = qw(
 sub cmpBuilds {
     my ($left, $right) = @_;
     return $left->get_column('job') cmp $right->get_column('job')
-        || $left->get_column('system') cmp $right->get_column('system')
+        || $left->system cmp $right->system
 }
 
 sub buildDiff {
@@ -76,7 +76,7 @@ sub buildDiff {
                 } else { die; }
                 last;
             }
-            my $job_system = { job => $build2->get_column('job'), system => $build2->get_column('system') };
+            my $job_system = { job => $build2->get_column('job'), system => $build2->system };
             push @{$ret->{removed}}, $job_system;
             $n++;
         }

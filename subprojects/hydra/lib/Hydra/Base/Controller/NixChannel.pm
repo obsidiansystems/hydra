@@ -19,7 +19,7 @@ sub getChannelData {
     my @builds = $c->stash->{channelBuilds}->all;
 
     for (my $n = 0; $n < scalar @builds; ) {
-        # Since channelData is a join of Builds and BuildOutputs, we
+        # Since channelData is a join of Builds and DerivationOutputs, we
         # need to gather the rows that belong to a single build.
         my $build = $builds[$n++];
         my @outputs = ($build);
