@@ -84,7 +84,7 @@ sub begin :Private {
     if (scalar(@args) == 0 || $args[0] ne "static") {
         $c->stash->{nrRunningSteps} = dbh($c)->selectrow_array(
             "select count(distinct drvPath) from buildsteps where busy != 0");
-        $c->stash->{nrQueuedBuilds} = $c->model('DB::Builds')->search({ finished => 0 })->count();
+        $c->stash->{nrQueuedBuilds} = $c->model('DB::Builds')->unfinished->count();
     }
 
     # Gather the supported input types.
@@ -144,8 +144,8 @@ sub queue_GET {
     $c->stash->{flashMsg} //= $c->flash->{buildMsg};
     $self->status_ok(
         $c,
-        entity => [$c->model('DB::Builds')->search(
-            { finished => 0 },
+        entity => [$c->model('DB::Builds')->unfinished->search(
+            {},
             { order_by => ["globalpriority desc", "id"],
             , columns => [@buildListColumns]
             })]
@@ -160,13 +160,13 @@ sub queue_summary :Local :Path('queue-summary') :Args(0) {
     $c->stash->{queued} = dbh($c)->selectall_arrayref(
         "select jobsets.project as project, jobsets.name as jobset, count(*) as queued, min(timestamp) as oldest, max(timestamp) as newest from Builds " .
         "join Jobsets jobsets on jobsets.id = builds.jobset_id " .
-        "where finished = 0 group by jobsets.project, jobsets.name order by queued desc",
+        "where stopTime is null group by jobsets.project, jobsets.name order by queued desc",
         { Slice => {} });
 
     $c->stash->{systems} = dbh($c)->selectall_arrayref(
         "select d.system as system, count(*) as c from Builds b " .
         "join Derivations d on d.path = b.drvPath " .
-        "where finished = 0 group by d.system order by c desc",
+        "where stopTime is null group by d.system order by c desc",
         { Slice => {} });
 }
 

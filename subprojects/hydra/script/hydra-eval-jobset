@@ -118,9 +118,9 @@ sub fetchInputBuild {
         )->single;
 
         # Pick the most recent successful build of the specified job.
-        $prevBuild = $db->resultset('Builds')->search(
-            { finished => 1, jobset_id => $jobset->get_column('id')
-            , job => $jobName, buildStatus => 0 },
+        $prevBuild = $db->resultset('Builds')->succeeded->search(
+            { jobset_id => $jobset->get_column('id')
+            , job => $jobName },
             { order_by => "me.id DESC", rows => 1
             , where => \ attrsToSQL($attrs, "me.id") })->single;
     }
@@ -217,9 +217,11 @@ sub fetchInputEval {
             { order_by => "id DESC", rows => 1
             , where =>
                 \ [ # All builds in this jobset should be finished...
-                    "not exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id where m.eval = me.id and b.finished = 0) "
+                    "not exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id where m.eval = me.id and b.fulfilledByDrvPath is null and b.buildStatus is null) "
                     # ...and the specified build must have succeeded.
-                    . "and exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id where m.eval = me.id and b.job = ? and b.buildstatus = 0)"
+                    . "and exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id "
+                    . "join BuildSteps fs on fs.drvPath = b.fulfilledByDrvPath and fs.attempt = b.fulfilledByAttempt "
+                    . "where m.eval = me.id and b.job = ? and fs.status = 0 and b.buildStatus is null)"
                   , [ 'name', $3 ] ]
             });
         die "there is no successful build of ‘$value’ in a finished evaluation\n" unless defined $eval;
@@ -566,7 +568,6 @@ sub checkBuild {
             , nixname => $buildInfo->{name}
             , drvpath => $drvPath
             , priority => getMeta($buildInfo->{meta}->{schedulingPriority}, 100)
-            , finished => 0
             , iscurrent => 1
             , ischannel => getMeta($buildInfo->{meta}->{isChannel}, 0)
             });
@@ -708,7 +709,9 @@ sub applyDrvPathRepoints {
             $db->txn_do(sub {
                 for my $id (@ids) {
                     $builds->search({ id => $id })->update(
-                        { drvpath => $buildMap->{$id}->{drvPath}, finished => 0, buildstatus => undef });
+                        { drvpath => $buildMap->{$id}->{drvPath}
+                        , fulfilledbydrvpath => undef, fulfilledbyattempt => undef
+                        , buildstatus => undef, stoptime => undef });
                 }
             });
         };

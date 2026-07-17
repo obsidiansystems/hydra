@@ -2121,20 +2121,14 @@ impl State {
 
         {
             let attempt = job.attempt.expect("attempt set after create_build_step");
-            let start_time = job.result.get_start_time_as_i32()?;
             let stop_time = job.result.get_stop_time_as_i32()?;
             crate::utils::with_serialization_retry("succeed_step", || async {
                 let mut db = self.db.get().await?;
                 let mut tx = db.begin_transaction().await?;
-                let owning_build_id = tx
-                    .get_build_id_for_step(self.connector.store_dir(), &job.path, attempt)
-                    .await?;
                 for b in &direct {
-                    let is_cached = owning_build_id != Some(b.id) || job.result.is_cached;
                     tx.mark_succeeded_build(
                         get_mark_build_sccuess_data(b, &output),
-                        is_cached,
-                        start_time,
+                        (&job.path, attempt),
                         stop_time,
                         self.connector.store_dir(),
                     )
@@ -2482,20 +2476,15 @@ impl State {
                     }
 
                     tracing::info!("marking build {} as failed", b.id);
-                    let start_time = job.result.get_start_time_as_i32()?;
                     let stop_time = job.result.get_stop_time_as_i32()?;
+                    // Dependency failure is derived: the fulfilling step's
+                    // drvPath differs from the build's own.
                     tx.update_build_after_failure(
+                        self.connector.store_dir(),
                         b.id,
-                        if &b.drv_path != step.get_drv_path()
-                            && job.result.step_status == BuildStatus::Failed
-                        {
-                            BuildStatus::DepFailed
-                        } else {
-                            job.result.step_status
-                        },
-                        start_time,
+                        &job.path,
+                        job.attempt.expect("attempt set after create_build_step"),
                         stop_time,
-                        job.result.step_status == BuildStatus::CachedFailure,
                     )
                     .await?;
                     marked_failed += 1;
@@ -2615,29 +2604,30 @@ impl State {
                 }
             }
 
-            tx.create_build_step(
+            let attempt = tx
+                .create_build_step(
+                    self.connector.store_dir(),
+                    None,
+                    build.id,
+                    step.get_drv_path(),
+                    step.get_system().as_deref(),
+                    String::new(),
+                    BuildStatus::CachedFailure,
+                    None,
+                    Some(propagated_from),
+                    step.get_output_paths()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect(),
+                )
+                .await?;
+            // Dependency failure is derived from the step's drvPath
+            // differing from the build's own.
+            tx.update_build_after_previous_failure(
                 self.connector.store_dir(),
-                None,
                 build.id,
                 step.get_drv_path(),
-                step.get_system().as_deref(),
-                String::new(),
-                BuildStatus::CachedFailure,
-                None,
-                Some(propagated_from),
-                step.get_output_paths()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect(),
-            )
-            .await?;
-            tx.update_build_after_previous_failure(
-                build.id,
-                if step.get_drv_path() == &build.drv_path {
-                    BuildStatus::Failed
-                } else {
-                    BuildStatus::DepFailed
-                },
+                attempt,
             )
             .await?;
 
@@ -3434,10 +3424,25 @@ impl State {
                 let mut db = self.db.get().await?;
                 let mut tx = db.begin_transaction().await?;
 
+                // A cached build still needs a fulfilling attempt; record
+                // the observation as a local (substitution-like) step.
+                let attempt = tx
+                    .create_local_step(
+                        self.connector.store_dir(),
+                        now,
+                        now,
+                        build.id,
+                        &build.drv_path,
+                        res.outputs
+                            .iter()
+                            .map(|(n, p)| (n.clone(), p.clone()))
+                            .collect(),
+                    )
+                    .await?;
+
                 tx.mark_succeeded_build(
                     get_mark_build_sccuess_data(&build, &res),
-                    true,
-                    now,
+                    (&build.drv_path, attempt),
                     now,
                     self.connector.store_dir(),
                 )

@@ -34,7 +34,9 @@ our @EXPORT = qw(
 
 
 # Columns from the Builds table needed to render build lists.
-Readonly::Array our @buildListColumns => ('id', 'finished', 'timestamp', 'stoptime', 'jobset_id', 'job', 'nixname', 'system', 'buildstatus', 'releasename');
+# finished/system/releasename are derived by row accessors; the
+# fulfilledBy pair and drvpath are what they need loaded.
+Readonly::Array our @buildListColumns => ('id', 'timestamp', 'stoptime', 'jobset_id', 'job', 'nixname', 'buildstatus', 'drvpath', 'fulfilledbydrvpath', 'fulfilledbyattempt');
 
 sub getBuild {
     my ($c, $id) = @_;
@@ -47,13 +49,18 @@ sub getPreviousBuild {
     my ($build) = @_;
     return undef if !defined $build;
     # FIXME: slow
-    return $build->jobset->builds->search(
-      { finished => 1
-      , system => $build->system
+    # Excludes cancelled/aborted builds like the old
+    # `-not buildstatus in (4, 3)` filter did: those are now residual
+    # statuses 1/2 (plus 3, unsupported, which the old filter let
+    # through only by accident) or aborted/cancelled fulfilling steps.
+    return $build->jobset->builds->finished->search(
+      { 'derivation.system' => $build->system
       , 'me.id' =>  { '<' => $build->id }
       , job => $build->job
-      , -not => { buildstatus => { -in => [4, 3]} }
-      }, { rows => 1, order_by => "me.id DESC" })->single;
+      , -not => { 'me.buildstatus' => { -in => [1, 2] } }
+      , -or => [ 'me.buildstatus' => { '!=', undef },
+                 'buildstep.status' => { -not_in => [3, 4] } ]
+      }, { rows => 1, order_by => "me.id DESC", join => ["derivation", "buildstep"] })->single;
 }
 
 
@@ -61,13 +68,12 @@ sub getNextBuild {
     my ($c, $build) = @_;
     return undef if !defined $build;
 
-    (my $nextBuild) = $c->model('DB::Builds')->search(
-      { finished => 1
-      , system => $build->system
+    (my $nextBuild) = $c->model('DB::Builds')->finished->search(
+      { 'derivation.system' => $build->system
       , jobset_id => $build->get_column('jobset_id')
       , job => $build->get_column('job')
       , 'me.id' =>  { '>' => $build->id }
-      }, {rows => 1, order_by => "me.id ASC"});
+      }, {rows => 1, order_by => "me.id ASC", join => "derivation"});
 
     return $nextBuild;
 }
@@ -77,14 +83,12 @@ sub getPreviousSuccessfulBuild {
     my ($c, $build) = @_;
     return undef if !defined $build;
 
-    (my $prevBuild) = $c->model('DB::Builds')->search(
-      { finished => 1
-      , system => $build->system
+    (my $prevBuild) = $c->model('DB::Builds')->succeeded->search(
+      { 'derivation.system' => $build->system
       , jobset_id => $build->get_column('jobset_id')
       , job => $build->get_column('job')
-      , buildstatus => 0
       , 'me.id' =>  { '<' => $build->id }
-      }, {rows => 1, order_by => "me.id DESC"});
+      }, {rows => 1, order_by => "me.id DESC", join => "derivation"});
 
     return $prevBuild;
 }
@@ -310,7 +314,7 @@ sub getLatestFinishedEval {
     my ($eval) = $jobset->jobsetevals->search(
         { hasnewbuilds => 1 },
         { order_by => "id DESC", rows => 1
-        , where => \ "not exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id where m.eval = me.id and b.finished = 0)"
+        , where => \ "not exists (select 1 from JobsetEvalMembers m join Builds b on m.build = b.id where m.eval = me.id and b.fulfilledByDrvPath is null and b.buildStatus is null)"
         });
     return $eval;
 }

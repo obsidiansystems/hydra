@@ -42,11 +42,6 @@ __PACKAGE__->table("builds");
   is_nullable: 0
   sequence: 'builds_id_seq'
 
-=head2 finished
-
-  data_type: 'integer'
-  is_nullable: 0
-
 =head2 timestamp
 
   data_type: 'integer'
@@ -130,39 +125,26 @@ __PACKAGE__->table("builds");
   default_value: 0
   is_nullable: 0
 
-=head2 starttime
-
-  data_type: 'integer'
-  is_nullable: 1
-
 =head2 stoptime
 
   data_type: 'integer'
   is_nullable: 1
 
-=head2 iscachedbuild
+=head2 fulfilledbydrvpath
+
+  data_type: 'text'
+  is_foreign_key: 1
+  is_nullable: 1
+
+=head2 fulfilledbyattempt
 
   data_type: 'integer'
+  is_foreign_key: 1
   is_nullable: 1
 
 =head2 buildstatus
 
   data_type: 'integer'
-  is_nullable: 1
-
-=head2 size
-
-  data_type: 'bigint'
-  is_nullable: 1
-
-=head2 closuresize
-
-  data_type: 'bigint'
-  is_nullable: 1
-
-=head2 releasename
-
-  data_type: 'text'
   is_nullable: 1
 
 =head2 keep
@@ -186,8 +168,6 @@ __PACKAGE__->add_columns(
     is_nullable       => 0,
     sequence          => "builds_id_seq",
   },
-  "finished",
-  { data_type => "integer", is_nullable => 0 },
   "timestamp",
   { data_type => "integer", is_nullable => 0 },
   "jobset_id",
@@ -218,20 +198,14 @@ __PACKAGE__->add_columns(
   { data_type => "integer", default_value => 0, is_nullable => 0 },
   "globalpriority",
   { data_type => "integer", default_value => 0, is_nullable => 0 },
-  "starttime",
-  { data_type => "integer", is_nullable => 1 },
   "stoptime",
   { data_type => "integer", is_nullable => 1 },
-  "iscachedbuild",
-  { data_type => "integer", is_nullable => 1 },
+  "fulfilledbydrvpath",
+  { data_type => "text", is_foreign_key => 1, is_nullable => 1 },
+  "fulfilledbyattempt",
+  { data_type => "integer", is_foreign_key => 1, is_nullable => 1 },
   "buildstatus",
   { data_type => "integer", is_nullable => 1 },
-  "size",
-  { data_type => "bigint", is_nullable => 1 },
-  "closuresize",
-  { data_type => "bigint", is_nullable => 1 },
-  "releasename",
-  { data_type => "text", is_nullable => 1 },
   "keep",
   { data_type => "integer", default_value => 0, is_nullable => 0 },
   "notificationpendingsince",
@@ -340,6 +314,26 @@ __PACKAGE__->has_many(
   "Hydra::Schema::Result::BuildProducts",
   { "foreign.build" => "self.id" },
   undef,
+);
+
+=head2 buildstep
+
+Type: belongs_to
+
+Related object: L<Hydra::Schema::Result::BuildSteps>
+
+=cut
+
+__PACKAGE__->belongs_to(
+  "buildstep",
+  "Hydra::Schema::Result::BuildSteps",
+  { attempt => "fulfilledbyattempt", drvpath => "fulfilledbydrvpath" },
+  {
+    is_deferrable => 0,
+    join_type     => "LEFT",
+    on_delete     => "NO ACTION",
+    on_update     => "NO ACTION",
+  },
 );
 
 =head2 buildsteps
@@ -476,8 +470,8 @@ __PACKAGE__->many_to_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 18:22:32
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Qe7eRy5QgAaAbD7N4giLfA
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-17 02:02:46
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:DBXfe3taSmsptK4IUxyp3Q
 
 __PACKAGE__->has_many(
   "dependents",
@@ -509,6 +503,92 @@ __PACKAGE__->many_to_many("constituents_", "aggregateconstituents_aggregates", "
 sub system {
     my ($self) = @_;
     return $self->derivation->system;
+}
+
+# Clearer alias for the loader-named `buildstep` relation: the attempt
+# whose completion finished this build.
+sub fulfilling_step {
+    my ($self) = @_;
+    return $self->buildstep;
+}
+
+# Compatibility accessors for the outcome columns that moved onto (or
+# are now derived from) the fulfilling step. These keep row-object
+# readers working; *queries* on the old columns must join instead.
+
+sub finished {
+    my ($self) = @_;
+    return defined $self->get_column('stoptime') ? 1 : 0;
+}
+
+# The raw residual status column (see hydra.sql for its codes).
+sub residual_buildstatus {
+    my ($self) = @_;
+    return $self->get_column('buildstatus');
+}
+
+# Override the column accessor: every existing reader of
+# $build->buildstatus expects the legacy vocabulary (0 = succeeded,
+# 1 = failed, 2 = dep-failed, ...), so derive it from the residual
+# status and the fulfilling step. Undef while unfinished. Writes go
+# through update({buildstatus => ...}) and store the residual codes.
+sub buildstatus {
+    my ($self) = @_;
+    my $residual = $self->get_column('buildstatus');
+    if (defined $residual) {
+        return 6 if $residual == 0; # failure with output
+        return 4 if $residual == 1; # cancelled
+        return 3 if $residual == 2; # aborted before any attempt
+        return 9 if $residual == 3; # unsupported system type
+    }
+    my $step = $self->fulfilling_step;
+    return undef unless defined $step;
+    # Fulfilled by a step for another derivation: a dependency failed.
+    return 2 if $step->get_column('drvpath') ne $self->get_column('drvpath');
+    return $step->status;
+}
+
+# Kept as an explicit alias for new code.
+sub legacy_buildstatus {
+    my ($self) = @_;
+    return $self->buildstatus;
+}
+
+# stoptime is a real column again (when the build reached its terminal
+# state); only starttime is derived, from the fulfilling attempt.
+sub starttime {
+    my ($self) = @_;
+    my $step = $self->fulfilling_step;
+    return defined $step ? $step->starttime : $self->get_column('stoptime');
+}
+
+sub size {
+    my ($self) = @_;
+    my $step = $self->fulfilling_step;
+    return defined $step ? $step->size : undef;
+}
+
+sub closuresize {
+    my ($self) = @_;
+    my $step = $self->fulfilling_step;
+    return defined $step ? $step->closuresize : undef;
+}
+
+sub releasename {
+    my ($self) = @_;
+    my $step = $self->fulfilling_step;
+    return defined $step ? $step->releasename : undef;
+}
+
+sub iscachedbuild {
+    my ($self) = @_;
+    my $step = $self->fulfilling_step;
+    return undef unless defined $step;
+    # Cached iff the fulfilling attempt was dispatched on behalf of a
+    # different build, or is a substitution (type 1): substituted
+    # builds record the substitution step under their own id but were
+    # historically counted as cached.
+    return ($step->get_column('build') != $self->id || $step->type == 1) ? 1 : 0;
 }
 
 # Compatibility relation: BuildOutputs was dropped in favour of
@@ -544,10 +624,12 @@ sub makeQueries {
             (select
                (select max(b.id) from builds b
                 join Derivations d on d.path = b.drvPath
+                join BuildSteps fs on fs.drvPath = b.fulfilledByDrvPath
+                                  and fs.attempt = b.fulfilledByAttempt
                 where
                   jobset_id = activeJobs.jobset_id
                   and job = activeJobs.job and d.system = activeJobs.system
-                  and finished = 1 and buildstatus = 0
+                  and fs.status = 0 and b.buildStatus is null
                ) as id
              from $activeJobs as activeJobs
             ) as latest
@@ -572,18 +654,19 @@ sub as_json {
 
   my $json = {
     id => $self->get_column('id'),
-    finished => $self->get_column('finished'),
+    finished => $self->finished,
     timestamp => $self->get_column('timestamp'),
-    starttime => $self->get_column('starttime'),
-    stoptime => $self->get_column('stoptime'),
+    starttime => $self->starttime,
+    stoptime => $self->stoptime,
     project => $jobset->get_column('project'),
     jobset => $jobset->name,
     job => $self->get_column('job'),
     nixname => $self->get_column('nixname'),
     system => $self->derivation->system,
     priority => $self->get_column('priority'),
-    buildstatus => $self->get_column('buildstatus'),
-    releasename => $self->get_column('releasename'),
+    # The legacy status vocabulary, for API compatibility.
+    buildstatus => $self->legacy_buildstatus,
+    releasename => $self->releasename,
     drvpath => $self->get_column('drvpath'),
     jobsetevals => [ map { $_->id } $self->jobsetevals ],
     buildoutputs => { map { $_->name  => $_ } $self->derivation->derivationoutputs },

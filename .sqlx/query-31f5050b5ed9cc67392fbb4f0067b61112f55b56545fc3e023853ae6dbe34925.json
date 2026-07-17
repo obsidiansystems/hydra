@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE builds SET buildStatus = $2, stopTime = $3 WHERE id = $1 AND stopTime IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "31f5050b5ed9cc67392fbb4f0067b61112f55b56545fc3e023853ae6dbe34925"
+}

@@ -20,11 +20,10 @@ sub channel : Chained('/') PathPart('channel/custom') CaptureArgs(3) {
     notFound($c, "Jobset $jobsetName doesn't exist.")
         if !$c->stash->{jobset};
 
-    my $lastSuccessful = $c->model('DB::Builds')->find(
+    my $lastSuccessful = $c->model('DB::Builds')->succeeded->find(
         { 'eval.hasnewbuilds' => 1
         , jobset_id => $c->stash->{jobset}->id,
         , job => $channelName
-        , buildstatus => 0
         },
         { rows => 1, order_by => "eval.id desc"
         , join => { jobsetevalmembers => 'eval' }

@@ -34,9 +34,9 @@ sub shield :Chained('job') PathPart('shield') Args(0) {
 
     my $job = $c->stash->{job};
 
-    my $lastBuild = $c->stash->{jobset}->builds->find(
-        { job => $job, finished => 1 },
-        { order_by => 'id DESC', rows => 1, columns => [@buildListColumns] }
+    my $lastBuild = $c->stash->{jobset}->builds->finished->find(
+        { job => $job },
+        { order_by => 'me.id DESC', rows => 1, columns => [@buildListColumns] }
     );
     notFound($c, "No latest build for job ‘$job’.") unless defined $lastBuild;
 
@@ -68,8 +68,8 @@ sub prometheus : Chained('job') PathPart('prometheus') Args(0) {
     my $prometheus = Net::Prometheus->new;
 
     my $lastBuild = $c->stash->{jobset}->builds->find(
-        { job => $c->stash->{job}, finished => 1 },
-        { order_by => 'id DESC', rows => 1, columns => ["stoptime", "buildstatus", "closuresize", "size"] }
+        { job => $c->stash->{job} },
+        { order_by => 'me.id DESC', rows => 1, columns => ["id", "buildstatus", "fulfilledbydrvpath", "fulfilledbyattempt", "drvpath"] }
     );
 
     $prometheus->new_counter(
@@ -122,13 +122,13 @@ sub overview : Chained('job') PathPart('') Args(0) {
     $c->stash->{template} = 'job.tt';
 
     $c->stash->{lastBuilds} =
-        [ $c->stash->{jobset}->builds->search({ job => $c->stash->{job}, finished => 1 },
-            { order_by => 'id DESC', rows => 10, columns => [@buildListColumns] }) ];
+        [ $c->stash->{jobset}->builds->finished->search({ job => $c->stash->{job} },
+            { order_by => 'me.id DESC', rows => 10, columns => [@buildListColumns] }) ];
 
     $c->stash->{queuedBuilds} = [
-        $c->stash->{jobset}->builds->search(
-            { job => $c->stash->{job}, finished => 0 },
-            { order_by => ["priority DESC", "id"] }
+        $c->stash->{jobset}->builds->unfinished->search(
+            { job => $c->stash->{job} },
+            { order_by => ["priority DESC", "me.id"] }
         ) ];
 
     # If this is an aggregate job, then get its constituents.
@@ -175,31 +175,33 @@ sub metrics_tab : Chained('job') PathPart('metric-tab') Args(0) {
 
 sub build_times : Chained('job') PathPart('build-times') Args(0) {
     my ($self, $c) = @_;
-    my @res = $c->stash->{jobset}->builds->search(
-        { job => $c->stash->{job}, finished => 1, buildstatus => 0, closuresize => { '!=', 0 } },
+    my @res = $c->stash->{jobset}->builds->succeeded->search(
+        { job => $c->stash->{job}, "buildstep.closuresize" => { '!=', 0 } },
         { join => "actualBuildStep"
         , "+select" => ["actualBuildStep.stoptime - actualBuildStep.starttime"]
         , "+as" => ["actualBuildTime"],
-        , order_by => "id" });
+        , order_by => "me.id" });
     $self->status_ok($c, entity => [ map { { id => $_->id, timestamp => $_ ->timestamp, value => $_->get_column('actualBuildTime') } } @res ]);
 }
 
 
 sub closure_sizes : Chained('job') PathPart('closure-sizes') Args(0) {
     my ($self, $c) = @_;
-    my @res = $c->stash->{jobset}->builds->search(
-        { job => $c->stash->{job}, finished => 1, buildstatus => 0, closuresize => { '!=', 0 } },
-        { order_by => "id", columns => [ "id", "timestamp", "closuresize" ] });
-    $self->status_ok($c, entity => [ map { { id => $_->id, timestamp => $_ ->timestamp, value => $_->closuresize } } @res ]);
+    my @res = $c->stash->{jobset}->builds->succeeded->search(
+        { job => $c->stash->{job}, "buildstep.closuresize" => { '!=', 0 } },
+        { order_by => "me.id", columns => [ "id", "timestamp" ]
+        , "+select" => ["buildstep.closuresize"], "+as" => ["closuresize"] });
+    $self->status_ok($c, entity => [ map { { id => $_->id, timestamp => $_ ->timestamp, value => $_->get_column('closuresize') } } @res ]);
 }
 
 
 sub output_sizes : Chained('job') PathPart('output-sizes') Args(0) {
     my ($self, $c) = @_;
-    my @res = $c->stash->{jobset}->builds->search(
-        { job => $c->stash->{job}, finished => 1, buildstatus => 0, size => { '!=', 0 } },
-        { order_by => "id", columns => [ "id", "timestamp", "size" ] });
-    $self->status_ok($c, entity => [ map { { id => $_->id, timestamp => $_ ->timestamp, value => $_->size } } @res ]);
+    my @res = $c->stash->{jobset}->builds->succeeded->search(
+        { job => $c->stash->{job}, "buildstep.size" => { '!=', 0 } },
+        { order_by => "me.id", columns => [ "id", "timestamp" ]
+        , "+select" => ["buildstep.size"], "+as" => ["size"] });
+    $self->status_ok($c, entity => [ map { { id => $_->id, timestamp => $_ ->timestamp, value => $_->get_column('size') } } @res ]);
 }
 
 

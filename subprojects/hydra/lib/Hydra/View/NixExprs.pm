@@ -68,7 +68,7 @@ EOF
             $res .= "  # Hydra build ${\$build->id}\n";
             $res .= "  ${\escapeAttributePath $attr} = (mkFakeDerivation {\n";
             $res .= "    type = \"derivation\";\n";
-            $res .= "    name = ${\escapeString ($build->get_column('releasename') or $build->nixname)};\n";
+            $res .= "    name = ${\escapeString ($build->releasename or $build->nixname)};\n";
             $res .= "    system = ${\escapeString $build->system};\n";
             $res .= "    meta = {\n";
             $res .= "      description = ${\escapeString $build->description};\n"

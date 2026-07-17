@@ -619,7 +619,7 @@ sub eval : Chained('buildChain') PathPart('eval') {
     my $eval = $c->stash->{build}->jobsetevals->find(
         { hasnewbuilds => 1 },
         { order_by => "id DESC", rows => 1
-        , "not exists (select 1 from jobsetevalmembers m2 join builds b2 on me.eval = m2.eval and m2.build = b2.id and b2.finished = 0)"
+        , "not exists (select 1 from jobsetevalmembers m2 join builds b2 on me.eval = m2.eval and m2.build = b2.id and b2.fulfilledByDrvPath is null and b2.buildStatus is null)"
         });
 
     notFound($c, "There is no finished evaluation containing this build.") unless defined $eval;

@@ -121,9 +121,9 @@ sub cancel : Chained('evalChain') PathPart('cancel') Args(0) {
 
 
 sub restart {
-    my ($self, $c, $condition) = @_;
+    my ($self, $c, $filter) = @_;
     requireRestartPrivileges($c, $c->stash->{project});
-    my $builds = $c->stash->{eval}->builds->search_rs({ finished => 1, buildstatus => $condition });
+    my $builds = $filter->($c->stash->{eval}->builds->search_rs({}));
     my $n = restartBuilds($c->model('DB')->schema, $builds);
     $c->flash->{successMsg} = "$n builds have been restarted.";
     $c->res->redirect($c->uri_for($c->controller('JobsetEval')->action_for('view'), $c->req->captures));
@@ -132,20 +132,20 @@ sub restart {
 
 sub restart_aborted : Chained('evalChain') PathPart('restart-aborted') Args(0) {
     my ($self, $c) = @_;
-    restart($self, $c, { -in => [3, 4, 9] });
+    restart($self, $c, sub { $_[0]->aborted });
 }
 
 
 sub restart_failed : Chained('evalChain') PathPart('restart-failed') Args(0) {
     my ($self, $c) = @_;
-    restart($self, $c, { 'not in' => [0] });
+    restart($self, $c, sub { $_[0]->failed });
 }
 
 
 sub bump : Chained('evalChain') PathPart('bump') Args(0) {
     my ($self, $c) = @_;
     requireBumpPrivileges($c, $c->stash->{project}); # FIXME: require admin?
-    my $builds = $c->stash->{eval}->builds->search({ finished => 0 });
+    my $builds = $c->stash->{eval}->builds->unfinished;
     my $n = $builds->count();
     $c->model('DB')->schema->txn_do(sub {
         $builds->update({globalpriority => time()});
@@ -161,7 +161,8 @@ sub nix : Chained('evalChain') PathPart('channel') CaptureArgs(0) {
     $c->stash->{channelName} = $c->stash->{project}->name . "-" . $c->stash->{jobset}->name . "-latest";
     $c->stash->{channelBuilds} = $c->stash->{eval}->builds
         ->search_literal("exists (select 1 from buildproducts where build = build.id and type = 'nix-build')")
-        ->search({ finished => 1, buildstatus => 0 },
+        ->succeeded
+        ->search({},
                  { columns => [@buildListColumns, 'drvpath', 'description', 'homepage']
                  , join => ["buildoutputs"]
                  , order_by => ["build.id", "buildoutputs.name"]
@@ -187,7 +188,8 @@ sub store_paths : Chained('evalChain') PathPart('store-paths') Args(0) {
 
     my @builds = $c->stash->{eval}->builds
         ->search_literal("exists (select 1 from buildproducts where build = build.id and type = 'nix-build')")
-        ->search({ finished => 1, buildstatus => 0 },
+        ->succeeded
+        ->search({},
                  { columns => [], join => ["buildoutputs"]
                  , '+select' => ['buildoutputs.path'], '+as' => ['outpath'] });
 

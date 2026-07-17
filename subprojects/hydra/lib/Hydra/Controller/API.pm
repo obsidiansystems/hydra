@@ -56,18 +56,18 @@ sub latestbuilds : Chained('api') PathPart('latestbuilds') Args(0) {
     my $job = $c->request->params->{job};
     my $system = $c->request->params->{system};
 
-    my $filter = {finished => 1};
+    my $filter = {};
     $filter->{"jobset.project"} = $project if defined $project && $project ne "";
     $filter->{"jobset.name"} = $jobset if defined $jobset && $jobset ne "";
     $filter->{job} = $job if defined $job && $job ne "";
-    $filter->{system} = $system if defined $system && $system ne "";
+    $filter->{"derivation.system"} = $system if defined $system && $system ne "";
 
-    my @latest = $c->model('DB::Builds')->search(
+    my @latest = $c->model('DB::Builds')->finished->search(
         $filter,
         {
             rows => $nr,
-            order_by => ["id DESC"],
-            join => [ "jobset" ]
+            order_by => ["me.id DESC"],
+            join => [ "jobset", "derivation" ]
         });
 
     my @list;
@@ -127,7 +127,7 @@ sub queue : Chained('api') PathPart('queue') Args(0) {
     my $nr = $c->request->params->{nr};
     error($c, "Parameter not defined!") if !defined $nr;
 
-    my @builds = $c->model('DB::Builds')->search({finished => 0}, {rows => $nr, order_by => ["priority DESC", "id"]});
+    my @builds = $c->model('DB::Builds')->unfinished->search({}, {rows => $nr, order_by => ["priority DESC", "id"]});
 
     my @list;
     push @list, buildToHash($_) foreach @builds;
@@ -141,7 +141,7 @@ sub queue : Chained('api') PathPart('queue') Args(0) {
 
 sub nrqueue : Chained('api') PathPart('nrqueue') Args(0) {
     my ($self, $c) = @_;
-    my $nrQueuedBuilds = $c->model('DB::Builds')->search({finished => 0})->count();
+    my $nrQueuedBuilds = $c->model('DB::Builds')->unfinished->count();
     $c->stash->{'plain'} = {
         data => "$nrQueuedBuilds"
     };
@@ -162,16 +162,16 @@ sub nrbuilds : Chained('api') PathPart('nrbuilds') Args(0) {
     my $job = $c->request->params->{job};
     my $system = $c->request->params->{system};
 
-    my $filter = {finished => 1};
+    my $filter = {};
     $filter->{"jobset.project"} = $project if defined $project && $project ne "";
     $filter->{"jobset.name"} = $jobset if defined $jobset && $jobset ne "";
     $filter->{job} = $job if defined $job && $job ne "";
-    $filter->{system} = $system if defined $system && $system ne "";
+    $filter->{"derivation.system"} = $system if defined $system && $system ne "";
 
     $base = 60*60 if($period eq "hour");
     $base = 24*60*60 if($period eq "day");
 
-    my @stats = $c->model('DB::Builds')->search(
+    my @stats = $c->model('DB::Builds')->finished->search(
         $filter,
         {
             select => [{ count => "*" }],
@@ -179,7 +179,7 @@ sub nrbuilds : Chained('api') PathPart('nrbuilds') Args(0) {
             group_by => ["timestamp - timestamp % $base"],
             order_by => "timestamp - timestamp % $base DESC",
             rows => $nr,
-            join => [ "jobset" ]
+            join => [ "jobset", "derivation" ]
         }
     );
     my @arr;

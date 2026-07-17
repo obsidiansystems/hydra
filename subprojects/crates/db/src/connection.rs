@@ -43,7 +43,7 @@ impl Connection {
               id,
               globalPriority
             FROM builds
-            WHERE finished = 0;"#
+            WHERE stopTime IS NULL;"#
         )
         .fetch_all(&mut *self.conn)
         .await?)
@@ -71,7 +71,7 @@ impl Connection {
               priority
             FROM builds
             INNER JOIN jobsets ON builds.jobset_id = jobsets.id
-            WHERE finished = 0 ORDER BY globalPriority desc, schedulingshares, random();"#
+            WHERE stopTime IS NULL ORDER BY globalPriority desc, schedulingshares, random();"#
         )
         .fetch_all(&mut *self.conn)
         .await?;
@@ -139,9 +139,10 @@ impl Connection {
     pub async fn abort_build(&mut self, build_id: BuildID) -> crate::Result<()> {
         #[allow(clippy::cast_possible_truncation)]
         sqlx::query!(
-            "UPDATE builds SET finished = 1, buildStatus = $2, startTime = $3, stopTime = $3 where id = $1 and finished = 0",
+            "UPDATE builds SET buildStatus = $2, stopTime = $3 \
+             WHERE id = $1 AND stopTime IS NULL",
             build_id,
-            BuildStatus::Aborted as i32,
+            crate::models::ResidualBuildStatus::Aborted as i32,
             // TODO migrate to 64bit timestamp
             jiff::Timestamp::now().as_second() as i32,
         )
@@ -249,7 +250,6 @@ impl Connection {
         .await?;
         sqlx::query!(
             r#"INSERT INTO builds (
-              finished,
               timestamp,
               jobset_id,
               job,
@@ -263,7 +263,6 @@ impl Connection {
               globalpriority,
               keep
             ) VALUES (
-              0,
               EXTRACT(EPOCH FROM NOW())::INT4,
               $1,
               'debug',
@@ -290,20 +289,29 @@ impl Connection {
         out_path: &StorePath,
     ) -> crate::Result<Option<super::models::BuildOutput>> {
         let out_path = store_dir.display(out_path).to_string();
+        // A successful build (with or without $out/nix-support/failed) is
+        // one whose fulfilling step succeeded; the legacy status
+        // vocabulary (0 / 6) is reconstructed from the residual status.
         Ok(sqlx::query_as!(
             super::models::BuildOutput,
             r#"
             SELECT
-              id AS "id!", buildStatus, releaseName, closureSize, size
+              b.id AS "id!",
+              CASE WHEN b.buildStatus = 0 THEN 6 ELSE fs.status END AS buildStatus,
+              fs.releaseName, fs.closureSize, fs.size
             FROM builds b
+            JOIN buildsteps fs ON fs.drvPath = b.fulfilledByDrvPath AND fs.attempt = b.fulfilledByAttempt
             JOIN derivationoutputs o ON o.drvPath = b.drvPath
-            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1
+            WHERE fs.status = 0 AND o.path = $1
             UNION
             SELECT
-              id, buildStatus, releaseName, closureSize, size
+              b.id,
+              CASE WHEN b.buildStatus = 0 THEN 6 ELSE fs.status END,
+              fs.releaseName, fs.closureSize, fs.size
             FROM builds b
+            JOIN buildsteps fs ON fs.drvPath = b.fulfilledByDrvPath AND fs.attempt = b.fulfilledByAttempt
             JOIN buildstepoutputs o ON o.drvPath = b.drvPath
-            WHERE finished = 1 AND (buildStatus = 0 OR buildStatus = 6) AND o.path = $1
+            WHERE fs.status = 0 AND o.path = $1
             LIMIT 1;"#,
             out_path.as_str(),
         )
@@ -496,88 +504,123 @@ impl Transaction<'_> {
     #[tracing::instrument(skip(self, v), err)]
     pub async fn update_build(
         &mut self,
+        store_dir: &StoreDir,
         build_id: BuildID,
         v: UpdateBuild<'_>,
     ) -> crate::Result<()> {
+        let drv_path = store_dir.display(v.drv_path).to_string();
         sqlx::query!(
             r#"
             UPDATE builds SET
-              finished = 1,
-              buildStatus = $2,
-              startTime = $3,
-              stopTime = $4,
-              size = $5,
-              closureSize = $6,
-              releaseName = $7,
-              isCachedBuild = $8,
-              notificationPendingSince = $4
+              fulfilledByDrvPath = $2,
+              fulfilledByAttempt = $3,
+              buildStatus = $4,
+              stopTime = $5,
+              notificationPendingSince = $5
             WHERE
               id = $1"#,
             build_id,
-            v.status as i32,
-            v.start_time,
+            drv_path.as_str(),
+            v.attempt,
+            if v.failed {
+                Some(crate::models::ResidualBuildStatus::FailedWithOutput as i32)
+            } else {
+                None
+            },
             v.stop_time,
-            v.size,
-            v.closure_size,
-            v.release_name,
-            i32::from(v.is_cached_build),
         )
         .execute(&mut *self.tx)
         .await?;
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, status, start_time, stop_time, is_cached_build), err)]
+    /// Record the per-attempt outcome data on the fulfilling step. Uses
+    /// COALESCE so the first (original) writer wins over later cached
+    /// observations.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn update_step_outcome(
+        &mut self,
+        store_dir: &StoreDir,
+        drv_path: &StorePath,
+        attempt: i32,
+        size: i64,
+        closure_size: i64,
+        release_name: Option<&str>,
+    ) -> crate::Result<()> {
+        let drv_path = store_dir.display(drv_path).to_string();
+        sqlx::query!(
+            r#"
+            UPDATE buildsteps SET
+              size = COALESCE(size, $3),
+              closureSize = COALESCE(closureSize, $4),
+              releaseName = COALESCE(releaseName, $5)
+            WHERE drvPath = $1 AND attempt = $2"#,
+            drv_path.as_str(),
+            attempt,
+            size,
+            closure_size,
+            release_name,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Finish a build with the failing step that determined its outcome.
+    /// Dependency failure is not a parameter: it is derived from the
+    /// fulfilling step's drvPath differing from the build's own.
+    #[tracing::instrument(skip(self, stop_time), err)]
     pub async fn update_build_after_failure(
         &mut self,
+        store_dir: &StoreDir,
         build_id: BuildID,
-        status: BuildStatus,
-        start_time: i32,
+        drv_path: &StorePath,
+        attempt: i32,
         stop_time: i32,
-        is_cached_build: bool,
     ) -> crate::Result<()> {
+        let drv_path = store_dir.display(drv_path).to_string();
         sqlx::query!(
             r#"
             UPDATE builds SET
-              finished = 1,
-              buildStatus = $2,
-              startTime = $3,
+              fulfilledByDrvPath = $2,
+              fulfilledByAttempt = $3,
               stopTime = $4,
-              isCachedBuild = $5,
               notificationPendingSince = $4
             WHERE
-              id = $1 AND finished = 0"#,
+              id = $1 AND stopTime IS NULL"#,
             build_id,
-            status as i32,
-            start_time,
+            drv_path.as_str(),
+            attempt,
             stop_time,
-            i32::from(is_cached_build),
         )
         .execute(&mut *self.tx)
         .await?;
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, status), err)]
+    /// Finish a build from a previously-recorded (cached) failure step.
+    #[tracing::instrument(skip(self), err)]
     pub async fn update_build_after_previous_failure(
         &mut self,
+        store_dir: &StoreDir,
         build_id: BuildID,
-        status: BuildStatus,
+        drv_path: &StorePath,
+        attempt: i32,
     ) -> crate::Result<()> {
+        let drv_path = store_dir.display(drv_path).to_string();
         #[allow(clippy::cast_possible_truncation)]
         sqlx::query!(
             r#"
             UPDATE builds SET
-              finished = 1,
-              buildStatus = $2,
-              startTime = $3,
-              stopTime = $3,
-              isCachedBuild = 1,
-              notificationPendingSince = $3
+              fulfilledByDrvPath = $2,
+              fulfilledByAttempt = $3,
+              stopTime = $4,
+              notificationPendingSince = $4
             WHERE
-              id = $1 AND finished = 0"#,
+              id = $1 AND stopTime IS NULL"#,
             build_id,
-            status as i32,
+            drv_path.as_str(),
+            attempt,
             // TODO migrate to 64bit timestamp
             jiff::Timestamp::now().as_second() as i32,
         )
@@ -964,7 +1007,7 @@ impl Transaction<'_> {
         build_id: BuildID,
     ) -> crate::Result<bool> {
         Ok(sqlx::query!(
-            "SELECT id FROM builds WHERE id = $1 AND finished = 0",
+            "SELECT id FROM builds WHERE id = $1 AND stopTime IS NULL",
             build_id,
         )
         .fetch_optional(&mut *self.tx)
@@ -1343,15 +1386,11 @@ impl Transaction<'_> {
         Ok(attempt)
     }
 
-    #[tracing::instrument(
-        skip(self, build, is_cached_build, start_time, stop_time, store_dir),
-        err
-    )]
+    #[tracing::instrument(skip(self, build, stop_time, store_dir), err)]
     pub async fn mark_succeeded_build(
         &mut self,
         build: crate::models::MarkBuildSuccessData<'_>,
-        is_cached_build: bool,
-        start_time: i32,
+        fulfilled_by: (&StorePath, i32),
         stop_time: i32,
         store_dir: &StoreDir,
     ) -> crate::Result<()> {
@@ -1363,20 +1402,24 @@ impl Transaction<'_> {
             return Ok(());
         }
 
+        self.update_step_outcome(
+            store_dir,
+            fulfilled_by.0,
+            fulfilled_by.1,
+            i64::try_from(build.size)?,
+            i64::try_from(build.closure_size)?,
+            build.release_name,
+        )
+        .await?;
+
         self.update_build(
+            store_dir,
             build.id,
             UpdateBuild {
-                status: if build.failed {
-                    BuildStatus::FailedWithOutput
-                } else {
-                    BuildStatus::Success
-                },
-                start_time,
+                drv_path: fulfilled_by.0,
+                attempt: fulfilled_by.1,
+                failed: build.failed,
                 stop_time,
-                size: i64::try_from(build.size)?,
-                closure_size: i64::try_from(build.closure_size)?,
-                release_name: build.release_name,
-                is_cached_build,
             },
         )
         .await?;

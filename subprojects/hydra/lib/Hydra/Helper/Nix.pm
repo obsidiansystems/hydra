@@ -162,9 +162,9 @@ sub jobsetOverview_ {
     return $jobsets->search({},
         { order_by => ["hidden ASC", "enabled DESC", "name"]
         , "+select" =>
-          [ "(select count(*) from Builds as a where me.id = a.jobset_id and a.finished = 0 and a.isCurrent = 1)"
-          , "(select count(*) from Builds as a where me.id = a.jobset_id and a.finished = 1 and buildstatus <> 0 and a.isCurrent = 1)"
-          , "(select count(*) from Builds as a where me.id = a.jobset_id and a.finished = 1 and buildstatus = 0 and a.isCurrent = 1)"
+          [ "(select count(*) from Builds as a where me.id = a.jobset_id and a.fulfilledByDrvPath is null and a.buildStatus is null and a.isCurrent = 1)"
+          , "(select count(*) from Builds as a left join BuildSteps as fs on fs.drvPath = a.fulfilledByDrvPath and fs.attempt = a.fulfilledByAttempt where me.id = a.jobset_id and a.isCurrent = 1 and (a.buildStatus is not null or fs.status <> 0))"
+          , "(select count(*) from Builds as a join BuildSteps as fs on fs.drvPath = a.fulfilledByDrvPath and fs.attempt = a.fulfilledByAttempt where me.id = a.jobset_id and fs.status = 0 and a.buildStatus is null and a.isCurrent = 1)"
           , "(select count(*) from Builds as a where me.id = a.jobset_id and a.isCurrent = 1)"
           ]
         , "+as" => ["nrscheduled", "nrfailed", "nrsucceeded", "nrtotal"]
@@ -255,8 +255,8 @@ sub getEvalInfo {
     if (defined $nrSucceeded) {
         $nrScheduled = 0;
     } else {
-        $nrScheduled = $eval->builds->search({finished => 0})->count;
-        $nrSucceeded = $eval->builds->search({finished => 1, buildStatus => 0})->count;
+        $nrScheduled = $eval->builds->unfinished->count;
+        $nrSucceeded = $eval->builds->succeeded->count;
         if ($nrScheduled == 0) {
             $eval->update({nrsucceeded => $nrSucceeded});
         }
@@ -512,15 +512,12 @@ sub getTotalShares {
 sub cancelBuilds {
     my ($db, $builds) = @_;
     return $db->txn_do(sub {
-        $builds = $builds->search({ finished => 0 });
+        $builds = $builds->unfinished;
         my $n = $builds->count;
-        my $time = time();
-        $builds->update(
-            { finished => 1,
-            , iscachedbuild => 0, buildstatus => 4 # = cancelled
-            , starttime => $time
-            , stoptime => $time
-            });
+        # Cancelled builds are never fulfilled; the residual status
+        # (1 = cancelled) and its termination time are all there is to
+        # set.
+        $builds->update({ buildstatus => 1, stoptime => time() });
         return $n;
     });
 }
@@ -529,7 +526,7 @@ sub cancelBuilds {
 sub restartBuilds {
     my ($db, $builds) = @_;
 
-    $builds = $builds->search({ finished => 1 });
+    $builds = $builds->finished;
 
     foreach my $build ($builds->search({}, { columns => ["drvpath"] })) {
         next if !$MACHINE_LOCAL_STORE->isValidPath($build->drvpath);
@@ -555,9 +552,13 @@ sub restartBuilds {
             })->delete;
         print STDERR "cleared $cleared failed paths\n";
 
+        # Restarting resets the fulfilling step and residual status,
+        # making the build unfinished again.
         $nrRestarted = $builds->update(
-            { finished => 0
-            , iscachedbuild => 0
+            { fulfilledbydrvpath => undef
+            , fulfilledbyattempt => undef
+            , buildstatus => undef
+            , stoptime => undef
             });
     });
 

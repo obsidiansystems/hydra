@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE builds SET\n              fulfilledByDrvPath = $2,\n              fulfilledByAttempt = $3,\n              stopTime = $4,\n              notificationPendingSince = $4\n            WHERE\n              id = $1 AND stopTime IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3090a47277665a09369ef1a97e9d7cbde959c11178f0813b8620954f16377f0b"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE buildsteps SET\n              size = COALESCE(size, $3),\n              closureSize = COALESCE(closureSize, $4),\n              releaseName = COALESCE(releaseName, $5)\n            WHERE drvPath = $1 AND attempt = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "012c9df994eee6436973dd593aa919ca5de239e28064b03fe187f5cb80bf4562"
+}

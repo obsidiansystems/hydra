@@ -120,6 +120,21 @@ __PACKAGE__->table("buildsteps");
   data_type: 'text'
   is_nullable: 1
 
+=head2 size
+
+  data_type: 'bigint'
+  is_nullable: 1
+
+=head2 closuresize
+
+  data_type: 'bigint'
+  is_nullable: 1
+
+=head2 releasename
+
+  data_type: 'text'
+  is_nullable: 1
+
 =cut
 
 __PACKAGE__->add_columns(
@@ -154,6 +169,12 @@ __PACKAGE__->add_columns(
   "isnondeterministic",
   { data_type => "boolean", is_nullable => 1 },
   "resolveddrvpath",
+  { data_type => "text", is_nullable => 1 },
+  "size",
+  { data_type => "bigint", is_nullable => 1 },
+  "closuresize",
+  { data_type => "bigint", is_nullable => 1 },
+  "releasename",
   { data_type => "text", is_nullable => 1 },
 );
 
@@ -202,6 +223,24 @@ __PACKAGE__->belongs_to(
   "Hydra::Schema::Result::Builds",
   { id => "build" },
   { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
+);
+
+=head2 builds
+
+Type: has_many
+
+Related object: L<Hydra::Schema::Result::Builds>
+
+=cut
+
+__PACKAGE__->has_many(
+  "builds",
+  "Hydra::Schema::Result::Builds",
+  {
+    "foreign.fulfilledbyattempt" => "self.attempt",
+    "foreign.fulfilledbydrvpath" => "self.drvpath",
+  },
+  undef,
 );
 
 =head2 buildstepoutputs
@@ -258,8 +297,8 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 18:22:32
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:PKAdd/Etj0uRcze6PrpQNg
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-16 21:44:19
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:n5CyLxYa4TuLiFlV7BxLrA
 
 # The system column moved to Derivations; keep the old accessor working.
 sub system {

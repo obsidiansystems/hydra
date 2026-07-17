@@ -25,7 +25,8 @@ sub addRoot {
 
 
 my @columns =
-    ( "id", "jobset_id", "job", "finished", "drvpath", "timestamp", "buildstatus"
+    ( "id", "jobset_id", "job", "drvpath", "timestamp", "buildstatus", "stoptime"
+    , "fulfilledbydrvpath", "fulfilledbyattempt"
     , { "outpaths" => \ "(select string_agg(path, ' ') from DerivationOutputs where drvPath = me.drvPath)" }
     );
 
@@ -74,7 +75,7 @@ closedir $dir;
 # For scheduled builds, we register the derivation as a GC root.
 print STDERR "*** looking for scheduled builds\n";
 keepBuild($_, 0) foreach $db->resultset('Builds')->search(
-    { finished => 0 },
+    { stoptime => undef },
     {
         columns => [ @columns ],
         join      => 'jobset',
@@ -87,7 +88,7 @@ keepBuild($_, 0) foreach $db->resultset('Builds')->search(
 # Keep all builds that have been marked as "keep".
 print STDERR "*** looking for kept builds\n";
 my @buildsToKeep = $db->resultset('Builds')->search(
-    { finished => 1, keep => 1 },
+    { keep => 1, stoptime => { '!=', undef } },
     {
         order_by => ["jobset_id", "job", "id"],
         columns => [ @columns ],
@@ -120,14 +121,14 @@ foreach my $project ($db->resultset('Projects')->search({}, { order_by => ["name
 
         # Get the unfinished evals.
         push @evals, $_->get_column("eval") foreach $jobset->builds->search(
-            { finished => 0 },
+            { stoptime => undef },
             { join => "jobsetevalmembers", select => "jobsetevalmembers.eval", as => "eval", distinct => 1 });
 
         # Get the N most recent finished evals.
         if ($keepnr) {
             push @evals, $_->get_column("id") foreach $jobset->jobsetevals->search(
                 { hasNewBuilds => 1 },
-                { where => \ "not exists (select 1 from builds b join jobsetevalmembers m on b.id = m.build where m.eval = me.id and b.finished = 0)"
+                { where => \ "not exists (select 1 from builds b join jobsetevalmembers m on b.id = m.build where m.eval = me.id and b.fulfilledByDrvPath is null and b.buildStatus is null)"
                 , order_by => "id desc", rows => $keepnr });
         }
 
@@ -135,7 +136,7 @@ foreach my $project ($db->resultset('Projects')->search({}, { order_by => ["name
         # they can be restarted.
         keepBuild($_, 1) foreach $jobset->builds->search(
             { "me.id" => { -in => $db->resultset('JobsetEvalMembers')->search({ eval => { -in => [@evals] } }, { select => "build" })->as_query }
-            , finished => 1
+            , "me.stoptime" => { '!=', undef }
             },
             {
                 order_by => ["job", "me.id"],
@@ -153,8 +154,7 @@ foreach my $project ($db->resultset('Projects')->search({}, { order_by => ["name
         # I really need to stop using DBIx::Class.
         keepBuild($_, 1) foreach $jobset->builds->search(
             { "me.id" => { -in => $jobset->builds->search(
-                { finished => 1
-                , buildstatus => [0, 6]
+                { "buildstep.status" => 0
                 , job => { -in => $jobset->builds->search(
                                 { eval => { -in => [@evals] } },
                                 { select => "job", distinct => 1, join => "jobsetevalmembers" }
@@ -162,6 +162,7 @@ foreach my $project ($db->resultset('Projects')->search({}, { order_by => ["name
                 },
                 { group_by => 'job'
                 , select => [ { max => 'me.id', -as => 'm' } ]
+                , join => "buildstep"
                 })->as_query }
             },
             {

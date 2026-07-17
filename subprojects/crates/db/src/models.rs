@@ -126,15 +126,31 @@ pub enum BuildType {
     Substitution = 1,
 }
 
+/// Residual status codes on `Builds.buildStatus`: outcomes that are
+/// distinct from the failure mode of an underlying step. Everything a
+/// fulfilling step can express is NULL there.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidualBuildStatus {
+    /// $out/nix-support/failed exists; the fulfilling step succeeded.
+    FailedWithOutput = 0,
+    /// Never fulfilled: a running attempt may finish for other builds.
+    Cancelled = 1,
+    /// Aborted before any attempt existed.
+    Aborted = 2,
+    /// No machine can build this system type.
+    Unsupported = 3,
+}
+
 #[derive(Debug)]
 pub struct UpdateBuild<'a> {
-    pub status: BuildStatus,
-    pub start_time: i32,
+    /// The attempt that finished this build.
+    pub drv_path: &'a StorePath,
+    pub attempt: i32,
+    /// $out/nix-support/failed exists (residual FailedWithOutput).
+    pub failed: bool,
+    /// Only used to stamp notificationPendingSince.
     pub stop_time: i32,
-    pub size: i64,
-    pub closure_size: i64,
-    pub release_name: Option<&'a str>,
-    pub is_cached_build: bool,
 }
 
 #[derive(Debug)]

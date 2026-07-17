@@ -180,9 +180,7 @@ create table DerivationOutputs (
 create table Builds (
     id            serial primary key not null,
 
-    -- A build is finished iff stopTime is non-NULL (equivalently:
-    -- fulfilledByDrvPath or buildStatus is non-NULL, see the check
-    -- constraint below); there is no separate flag to keep in sync.
+    finished      integer not null, -- 0 = scheduled, 1 = finished
 
     timestamp     integer not null, -- time this build was added
 
@@ -211,75 +209,40 @@ create table Builds (
     -- the front of the queue via the web interface.
     globalPriority integer not null default 0,
 
-    -- When this build reached its terminal state. For a build that ran
-    -- its own attempt this equals the fulfilling step's stopTime; when
-    -- the two *differ*, the build was finished by adopting a result
-    -- that already existed (another build's attempt, or a substituted
-    -- path) and this records when it was marked, while the step
-    -- records when the work actually ran. For step-less terminations
-    -- (cancelled/aborted/unsupported) this is the only time there is.
-    -- NULL iff the build is unfinished — this is *the* finished
-    -- predicate; the check constraint below keeps it honest.
-    stopTime      integer,
+    -- FIXME: remove startTime?
+    startTime     integer, -- if busy/finished, time we started
+    stopTime      integer, -- if finished, time we finished
 
-    -- The build step attempt whose completion finished this build.
-    -- This is immutable history: it is never re-pointed at later
-    -- attempts of the same derivation.
-    --
-    -- For the build's own outcome — success or failure, including
-    -- content-addressed builds — this always points at a step for the
-    -- build's *own* drvPath: a CA build is fulfilled by its Resolution
-    -- step (status = 13), whose resolvedDrvPath chains to where the
-    -- real work happened.
-    --
-    -- Consequently, fulfilledByDrvPath <> drvPath means exactly one
-    -- thing: a *dependency's* failing step finished this build (the
-    -- old "dependency failed" status, now derived rather than stored).
-    --
-    -- Outcome data — status, times, size, release name, outputs — lives
-    -- on the fulfilling step, no longer copied here. Restarting a build
-    -- resets this to NULL and requeues. (The foreign key is added after
-    -- BuildSteps below.)
-    --
-    -- Known wrinkle we accept for now: for a content-addressed build,
-    -- the chain hop from the Resolution step lands on the resolved
-    -- *derivation*, not a specific attempt, so the derived status can
-    -- change if that derivation is re-attempted later on behalf of
-    -- another build. Input-addressed builds are immune (the fulfilling
-    -- step is the attempt itself).
-    fulfilledByDrvPath text,
-    fulfilledByAttempt integer,
+    -- Information about finished builds.
+    isCachedBuild integer, -- boolean
 
-    -- Residual status for build outcomes that are distinct from the
-    -- failure mode of an underlying step:
-    --   NULL: see fulfilling step, if set (otherwise unfinished)
-    --   0 = failure with output (i.e. $out/nix-support/failed exists).
-    --       fulfilledBy* is set in this case, and the fulfilling step
-    --       actually succeeded.
-    --   1 = cancelled. Always build-local: a running attempt may still
-    --       finish on behalf of other builds, so it never fulfils this
-    --       build. fulfilledBy* is not set in this case.
-    --   2 = aborted before any attempt existed (e.g. input resolution
-    --       failed, or the derivation disappeared). An abort of a
-    --       running attempt is not recorded here: the aborted step
-    --       fulfils the build. fulfilledBy* is not set in this case.
-    --   3 = unsupported system type (no machine can build it, so no
-    --       attempt was ever made). fulfilledBy* is not set in this
-    --       case.
+    -- Status codes used for builds and steps:
+    --   0 = succeeded
+    --   1 = regular Nix failure (derivation returned non-zero exit code)
+    --   2 = build of a dependency failed [builds only]
+    --   3 = build or step aborted due to misc failure
+    --   4 = build or step cancelled
+    --   5 = [obsolete]
+    --   6 = failure with output (i.e. $out/nix-support/failed exists) [builds only]
+    --   7 = build timed out
+    --   8 = cached failure [steps only; builds use isCachedBuild]
+    --   9 = unsupported system type
+    --  10 = log limit exceeded
+    --  11 = NAR size limit exceeded
+    --  12 = build or step was not deterministic
     buildStatus   integer,
+
+    size          bigint,
+    closureSize   bigint,
+
+    releaseName   text, -- e.g. "patchelf-0.5pre1234"
 
     keep          integer not null default 0, -- true means never garbage-collect the build output
 
     notificationPendingSince integer,
 
-    constraint builds_fulfilledby_paired_check
-        check ((fulfilledByDrvPath is null) = (fulfilledByAttempt is null)),
-    -- buildStatus and fulfilledBy* are mutually exclusive, except that
-    -- "failure with output" also has its (successful) fulfilling step.
-    constraint builds_residual_status_check
-        check (buildStatus is null or fulfilledByDrvPath is null or buildStatus = 0),
-    constraint builds_stoptime_check
-        check ((stopTime is null) = (fulfilledByDrvPath is null and buildStatus is null)),
+    check (finished = 0 or (stoptime is not null and stoptime != 0)),
+    check (finished = 0 or (starttime is not null and starttime != 0)),
 
     foreign key (jobset_id) references Jobsets(id) on delete cascade
 );
@@ -290,13 +253,11 @@ create trigger BuildsDeleted after delete on Builds execute procedure notifyBuil
 
 create function notifyBuildRestarted() returns trigger as 'begin notify builds_restarted; return null; end;' language plpgsql;
 create trigger BuildRestarted after update on Builds for each row
-  when (old.stopTime is not null and new.stopTime is null)
-  execute procedure notifyBuildRestarted();
+  when (old.finished = 1 and new.finished = 0) execute procedure notifyBuildRestarted();
 
 create function notifyBuildCancelled() returns trigger as 'begin notify builds_cancelled; return null; end;' language plpgsql;
 create trigger BuildCancelled after update on Builds for each row
-  when (old.stopTime is null and new.buildStatus = 1)
-  execute procedure notifyBuildCancelled();
+  when (old.finished = 0 and new.finished = 1 and new.buildStatus = 4) execute procedure notifyBuildCancelled();
 
 create function notifyBuildBumped() returns trigger as 'begin notify builds_bumped; return null; end;' language plpgsql;
 create trigger BuildBumped after update on Builds for each row
@@ -338,21 +299,7 @@ create table BuildSteps (
     -- 6 = analysing build result
     busy          integer not null,
 
-    -- Status codes used for builds and steps:
-    --   0 = succeeded
-    --   1 = regular Nix failure (derivation returned non-zero exit code)
-    --   2 = [unused]
-    --   3 = build or step aborted due to misc failure
-    --   4 = build or step cancelled
-    --   5 = [obsolete]
-    --   6 = [unused]
-    --   7 = build timed out
-    --   8 = cached failure
-    --   9 = unsupported system type
-    --  10 = log limit exceeded
-    --  11 = NAR size limit exceeded
-    --  12 = build or step was not deterministic
-    status        integer,
+    status        integer, -- see Builds.buildStatus
 
     errorMsg      text,
 
@@ -382,12 +329,6 @@ create table BuildSteps (
     -- include it, it is just newer.
     resolvedDrvPath  text,
 
-    -- Outcome data computed once per attempt (previously copied onto
-    -- every build sharing the derivation).
-    size          bigint,
-    closureSize   bigint,
-    releaseName   text, -- e.g. "patchelf-0.5pre1234"
-
     primary key   (build, stepnr),
     unique        (drvPath, attempt),
     check         (stepnr > 0),
@@ -397,12 +338,6 @@ create table BuildSteps (
     -- status = 13 (Resolved) iff resolvedDrvPath is set
     check ((status = 13) = (resolvedDrvPath is not null))
 );
-
--- Deferred from the Builds definition above: Builds and BuildSteps
--- reference each other, so this foreign key can only exist once both
--- tables do.
-alter table Builds add foreign key (fulfilledByDrvPath, fulfilledByAttempt)
-    references BuildSteps(drvPath, attempt);
 
 
 -- This makes the build trace: which
@@ -761,13 +696,12 @@ insert into NrBuilds(what, count) values('finished', 0);
 
 
 create function modifyNrBuildsFinished() returns trigger as $$
-  declare
-    old_finished boolean := tg_op <> 'INSERT' and old.stopTime is not null;
-    new_finished boolean := tg_op <> 'DELETE' and new.stopTime is not null;
   begin
-    if (new_finished and not old_finished) then
+    if ((tg_op = 'INSERT' and new.finished = 1) or
+        (tg_op = 'UPDATE' and old.finished = 0 and new.finished = 1)) then
       update NrBuilds set count = count + 1 where what = 'finished';
-    elsif (old_finished and not new_finished) then
+    elsif ((tg_op = 'DELETE' and old.finished = 1) or
+           (tg_op = 'UPDATE' and old.finished = 1 and new.finished = 0)) then
       update NrBuilds set count = count - 1 where what = 'finished';
     end if;
     return null;
@@ -791,20 +725,16 @@ create index IndexBuildStepsOnDrvPath on BuildSteps(drvpath);
 create index IndexBuildStepsOnPropagatedFrom on BuildSteps(propagatedFrom) where propagatedFrom is not null;
 create index IndexBuildStepsOnStopTime on BuildSteps(stopTime desc) where startTime is not null and stopTime is not null;
 create index IndexBuildStepOutputsOnPath on BuildStepOutputs(path);
--- A build is unfinished iff stopTime is NULL; these partial
--- indexes serve the queue scan and jobset pages.
-create index IndexBuildsUnfinished on Builds(id) where stopTime is null;
+create index IndexBuildsOnFinished on Builds(finished) where finished = 0;
 create index IndexBuildsOnIsCurrent on Builds(isCurrent) where isCurrent = 1;
-create index IndexBuildsJobsetIdCurrentUnfinished on Builds(jobset_id) where isCurrent = 1 and stopTime is null;
+create index IndexBuildsJobsetIdCurrentUnfinished on Builds(jobset_id) where isCurrent = 1 and finished = 0;
+create index IndexBuildsJobsetIdCurrentFinishedStatus on Builds(jobset_id, buildstatus) where isCurrent = 1 and finished = 1;
 create index IndexBuildsJobsetIdCurrent on Builds(jobset_id) where isCurrent = 1;
 create index IndexBuildsOnTimestamp on Builds(timestamp);
-create index IndexBuildsOnJobsetIdJobId on Builds(jobset_id, job, id DESC);
--- TODO: success/failure filtering is now derived through the fulfilling
--- step, so the old partial indexes on buildstatus are gone; the listing
--- queries join BuildSteps instead and may need supporting indexes there
--- once measured at scale.
+create index IndexBuildsOnFinishedStopTime on Builds(finished, stoptime DESC);
+create index IndexBuildsOnJobsetIdFinishedId on Builds(jobset_id, job, finished, id DESC);
+create index IndexFinishedSuccessfulBuilds on Builds(jobset_id, job, finished, buildstatus, id DESC) where buildstatus = 0 and finished = 1;
 create index IndexBuildsOnDrvPath on Builds(drvPath);
-create index IndexBuildsOnFulfilledBy on Builds(fulfilledByDrvPath, fulfilledByAttempt) where fulfilledByDrvPath is not null;
 create index IndexCachedHgInputsOnHash on CachedHgInputs(uri, branch, sha256hash);
 create index IndexCachedGitInputsOnHash on CachedGitInputs(uri, branch, sha256hash);
 create index IndexCachedSubversionInputsOnUriRevision on CachedSubversionInputs(uri, revision);
