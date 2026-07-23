@@ -17,7 +17,7 @@ use crate::types::BuildTimings;
 use binary_cache::{
     CacheError, Compression, MorePartsSource, PresignedPart, PresignedUpload, PresignedUploadClient,
 };
-use daemon_client_utils::DaemonStoreReader;
+use daemon_client_utils::{DaemonConnPool, DaemonStoreReader};
 use harmonia_protocol::daemon_wire::types2::{BuildResultInner, FailureStatus};
 use harmonia_store_derivation::derived_path::OutputName;
 use harmonia_store_path::StorePath;
@@ -731,15 +731,15 @@ async fn pin_path(roots: &TempRoots, path: &StorePath) -> bool {
     roots.lock().await.add_temp_root(path).await.is_ok()
 }
 
-#[tracing::instrument(skip(store, roots), fields(%path))]
+#[tracing::instrument(skip(pool, roots), fields(%path))]
 async fn is_path_missing(
-    store: &DaemonStoreReader,
+    pool: &Arc<DaemonConnPool>,
     roots: &TempRoots,
     path: StorePath,
 ) -> eyre::Result<Option<StorePath>> {
     // Take the temp root *before* checking validity.
     // `add_temp_root` succeeds even for an invalid (already-collected) path
-    if pin_path(roots, &path).await && store.is_valid_path(&path).await? {
+    if pin_path(roots, &path).await && pool.acquire().await?.is_valid_path(&path).await? {
         Ok(None)
     } else {
         Ok(Some(path))
@@ -754,8 +754,9 @@ async fn filter_missing(
     concurrency: usize,
 ) -> eyre::Result<Vec<StorePath>> {
     use futures::StreamExt as _;
+    let pool = DaemonConnPool::new(store.clone(), 16);
     futures::StreamExt::map(tokio_stream::iter(paths), |p| {
-        is_path_missing(store, roots, p)
+        is_path_missing(&pool, roots, p)
     })
     .buffered(concurrency)
     .collect::<Vec<_>>()
