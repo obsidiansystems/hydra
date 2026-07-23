@@ -35,7 +35,7 @@ pub fn flatten_path(sdp: &SingleDerivedPath) -> (StorePath, OutputNameChain) {
     }
 }
 
-/// Like [`flatten_path`] but appends an additional output name.
+/// Like [`flatten_path`] but adds the outermost output name.
 ///
 /// For `Built { Opaque(A), "foo" }` with output `"bar"`,
 /// returns `(A, ["bar", "foo"])`.
@@ -45,7 +45,8 @@ pub fn flatten_chain(
     output_name: &OutputName,
 ) -> (StorePath, OutputNameChain) {
     let (root, mut chain) = flatten_path(drv_path);
-    chain.0.push(output_name.clone());
+    // `output_name` is outermost and resolved last, so it goes to the front of the stack.
+    chain.0.insert(0, output_name.clone());
     (root, chain)
 }
 
