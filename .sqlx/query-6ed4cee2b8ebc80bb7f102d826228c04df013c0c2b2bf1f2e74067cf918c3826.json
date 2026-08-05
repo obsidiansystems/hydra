@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE buildstepoutputs SET path = $4, storedir = $5 WHERE build = $1 AND stepnr = $2 AND name = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6ed4cee2b8ebc80bb7f102d826228c04df013c0c2b2bf1f2e74067cf918c3826"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n              INSERT INTO buildproducts (\n                build,\n                productnr,\n                type,\n                subtype,\n                fileSize,\n                sha256hash,\n                path,\n                subPath,\n                storeDir,\n                name,\n                defaultPath\n              ) VALUES (\n                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11\n              )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7439d2efcf7320df88bcbd89aa6e31b405fba0cb073e14d4465aa0437ae6cb67"
+}

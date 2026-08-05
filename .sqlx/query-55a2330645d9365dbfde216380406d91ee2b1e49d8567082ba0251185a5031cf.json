@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n              id, buildStatus, releaseName, closureSize, size\n            FROM builds b\n            JOIN buildoutputs o on b.id = o.build\n            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = $1;",
+  "query": "\n            SELECT\n              id, buildStatus, releaseName, closureSize, size, o.storeDir\n            FROM builds b\n            JOIN buildoutputs o on b.id = o.build\n            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = ANY($1);",
   "describe": {
     "columns": [
       {
@@ -27,11 +27,16 @@
         "ordinal": 4,
         "name": "size",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "storedir",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
@@ -39,8 +44,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "e418dcd190f68642391dc8793fc30ad500dc5d513fce55a901e1d4a400323cc8"
+  "hash": "55a2330645d9365dbfde216380406d91ee2b1e49d8567082ba0251185a5031cf"
 }

@@ -59,7 +59,7 @@ sub buildFinished {
 
     my @needed_paths = ();
     foreach my $output ($build->buildoutputs) {
-        push @needed_paths, $output->path;
+        push @needed_paths, printStorePath($storeDir, $output->path);
     }
 
     my %narinfos = ();

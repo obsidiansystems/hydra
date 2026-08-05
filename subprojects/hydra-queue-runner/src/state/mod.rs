@@ -2556,11 +2556,7 @@ impl State {
                         tx.get_last_build_step_id_for_output_path(self.connector.store_dir(), path)
                             .await
                     } else {
-                        tx.get_last_build_step_id_for_output_with_drv(
-                            self.connector.store_dir(),
-                            step.get_drv_path(),
-                            name.as_ref(),
-                        )
+                        tx.get_last_build_step_id_for_output_with_drv(self.connector.store_dir(), step.get_drv_path(), name.as_ref())
                         .await
                     };
                     if let Ok(Some(res)) = res {
@@ -3118,10 +3114,7 @@ impl State {
         // output paths so the step graph is not touched in this phase.
         let previous_failure = match self.db.get().await {
             Ok(mut conn) => conn
-                .check_if_paths_failed(
-                    self.connector.store_dir(),
-                    &output_paths.values().flatten().cloned().collect::<Vec<_>>(),
-                )
+                .check_if_paths_failed(self.connector.store_dir(), &output_paths.values().flatten().cloned().collect::<Vec<_>>())
                 .await
                 .unwrap_or_default(),
             Err(_) => false,
@@ -3366,10 +3359,7 @@ impl State {
             return false;
         };
 
-        conn.check_if_paths_failed(
-            self.connector.store_dir(),
-            &drv_outputs.values().flatten().cloned().collect::<Vec<_>>(),
-        )
+        conn.check_if_paths_failed(self.connector.store_dir(), &drv_outputs.values().flatten().cloned().collect::<Vec<_>>())
         .await
         .unwrap_or_default()
     }
@@ -3443,7 +3433,7 @@ impl State {
                 };
 
                 res.products = db
-                    .get_build_products_for_build_id(build_id, self.connector.store_dir())
+                    .get_build_products_for_build_id(self.connector.store_dir(), build_id)
                     .await?;
                 res.metrics = db
                     .get_build_metrics_for_build_id(build_id)

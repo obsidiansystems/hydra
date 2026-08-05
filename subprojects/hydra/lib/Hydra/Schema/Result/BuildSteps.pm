@@ -58,6 +58,11 @@ __PACKAGE__->table("buildsteps");
   data_type: 'text'
   is_nullable: 0
 
+=head2 storedir
+
+  data_type: 'text'
+  is_nullable: 1
+
 =head2 busy
 
   data_type: 'integer'
@@ -131,6 +136,8 @@ __PACKAGE__->add_columns(
   { data_type => "integer", is_nullable => 0 },
   "drvpath",
   { data_type => "text", is_nullable => 0 },
+  "storedir",
+  { data_type => "text", is_nullable => 1 },
   "busy",
   { data_type => "integer", is_nullable => 0 },
   "status",
@@ -224,10 +231,9 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-07-15 11:41:43
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:BzGi6sOIZ8K602dlsYEiag
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-08-05 13:21:19
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:gkSY9h7g4HtV9rh+YeAutA
 
-use File::Basename ();
 
 # Find the step that this Resolved (status=13) step was resolved to, or
 # undef if it hasn't been scheduled yet. Resolution is one-shot: a resolved
@@ -247,12 +253,13 @@ sub resolved_terminal {
     my $resolved = eval { Nix::StorePath->new($self->resolveddrvpath) };
     return undef unless defined $resolved;
 
-    # Resolution stays within the build that requested the work.
-    # `search` does not deflate, so print the store path for the query.
+    # Resolution stays within the build that requested the work. `search` does
+    # not deflate, and `drvpath` may still hold either format, so both
+    # spellings go in by hand.
     return $self->result_source->resultset->search(
         {
             build   => $self->get_column('build'),
-            drvpath => printStorePath($self->result_source->schema->storeDir, $resolved),
+            drvpath => { -in => storePathForms($self->result_source->schema->storeDir, $resolved) },
             # A real terminal is never itself Resolved.
             status  => [ undef, { '!=' => 13 } ],
         },
@@ -280,11 +287,12 @@ sub resolution_origins {
 }
 
 my %hint = (
+    # `resolveddrvpath` is not here: it has always been served as a basename.
+    store_path_columns => ["drvpath"],
     columns => [
         "machine",
         "system",
         "stepnr",
-        "drvpath",
         "starttime",
         "resolveddrvpath",
     ],

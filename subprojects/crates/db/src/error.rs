@@ -12,6 +12,12 @@ pub enum DataError {
 
     #[error("build product #{productnr} for build {build_id} has no path")]
     BuildProductMissingPath { build_id: i32, productnr: i32 },
+
+    /// A row's storeDir column disagrees with the store dir this queue
+    /// runner is configured for. The DB may legitimately hold rows from
+    /// another store, but this deployment cannot act on them.
+    #[error("row's store dir `{found}` does not match the configured store dir `{expected}`")]
+    StoreDirMismatch { expected: String, found: String },
 }
 
 /// Errors from the db crate.

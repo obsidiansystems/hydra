@@ -17,6 +17,46 @@ pub struct Connection {
     conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
 }
 
+/// Reads that return store-path data also read the row's storeDir and
+/// assert it matches the configured store dir, rather than silently
+/// trusting that the whole DB belongs to this store.
+fn check_store_dir(store_dir: &StoreDir, found: &str) -> crate::Result<()> {
+    if store_dir.to_str() == found {
+        Ok(())
+    } else {
+        Err(crate::DataError::StoreDirMismatch {
+            expected: store_dir.to_str().to_owned(),
+            found: found.to_owned(),
+        }
+        .into())
+    }
+}
+
+/// Parse a store path out of a row, in whichever of the two formats it
+/// is stored in: a converted row holds the basename and records its
+/// store in storeDir, while one that `hydra-backfill-store-dirs` has not
+/// reached yet holds the full path and a null storeDir.
+fn parse_row_path(
+    store_dir: &StoreDir,
+    path: &str,
+    row_store_dir: Option<&str>,
+) -> crate::Result<StorePath> {
+    match row_store_dir {
+        Some(found) => {
+            check_store_dir(store_dir, found)?;
+            Ok(StorePath::from_base_path(path)?)
+        }
+        None => Ok(store_dir.parse(path)?),
+    }
+}
+
+/// Both stored forms of a path, for lookups that have to find a row
+/// whether or not it has been converted yet. Bound against `= ANY(...)`,
+/// so the existing indexes on these columns still serve the lookup.
+fn path_forms(store_dir: &StoreDir, path: &StorePath) -> Vec<String> {
+    vec![path.to_string(), store_dir.display(path).to_string()]
+}
+
 #[derive(Debug)]
 pub struct Transaction<'a> {
     tx: sqlx::PgTransaction<'a>,
@@ -54,8 +94,7 @@ impl Connection {
         &mut self,
         store_dir: &StoreDir,
     ) -> crate::Result<Vec<Build>> {
-        let rows = sqlx::query_as!(
-            Build::<String>,
+        let rows = sqlx::query!(
             r#"
             SELECT
               builds.id,
@@ -64,6 +103,7 @@ impl Connection {
               jobsets.name as jobset,
               job,
               drvPath,
+              storeDir,
               maxsilent,
               timeout,
               timestamp,
@@ -76,7 +116,21 @@ impl Connection {
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter()
-            .map(|r| Ok(r.parse_paths(store_dir)?))
+            .map(|r| {
+                Ok(Build {
+                    id: r.id,
+                    jobset_id: r.jobset_id,
+                    project: r.project,
+                    jobset: r.jobset,
+                    job: r.job,
+                    drvpath: parse_row_path(store_dir, &r.drvpath, r.storedir.as_deref())?,
+                    maxsilent: r.maxsilent,
+                    timeout: r.timeout,
+                    timestamp: i64::from(r.timestamp),
+                    globalpriority: r.globalpriority,
+                    priority: r.priority,
+                })
+            })
             .collect()
     }
 
@@ -156,16 +210,14 @@ impl Connection {
         store_dir: &StoreDir,
         paths: &[StorePath],
     ) -> crate::Result<bool> {
-        let paths: Vec<String> = paths
-            .iter()
-            .map(|p| store_dir.display(p).to_string())
-            .collect();
-        Ok(
-            !sqlx::query!("SELECT path FROM failedpaths where path = ANY($1)", &paths)
-                .fetch_all(&mut *self.conn)
-                .await?
-                .is_empty(),
+        let paths: Vec<String> = paths.iter().flat_map(|p| path_forms(store_dir, p)).collect();
+        Ok(!sqlx::query!(
+            "SELECT path FROM failedpaths where path = ANY($1)",
+            &paths,
         )
+        .fetch_all(&mut *self.conn)
+        .await?
+        .is_empty())
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -223,7 +275,7 @@ impl Connection {
         drv_path: &StorePath,
         system: &str,
     ) -> crate::Result<()> {
-        let drv_path = store_dir.display(drv_path).to_string();
+        let drv_path = drv_path.to_string();
         sqlx::query!(
             r#"INSERT INTO builds (
               finished,
@@ -232,6 +284,7 @@ impl Connection {
               job,
               nixname,
               drvpath,
+              storedir,
               system,
               maxsilent,
               timeout,
@@ -248,6 +301,7 @@ impl Connection {
               'debug',
               $2,
               $3,
+              $4,
               7200,
               36000,
               0,
@@ -257,6 +311,7 @@ impl Connection {
             0);"#,
             jobset_id,
             drv_path,
+            store_dir.to_str(),
             system,
         )
         .execute(&mut *self.conn)
@@ -269,25 +324,37 @@ impl Connection {
         store_dir: &StoreDir,
         out_path: &StorePath,
     ) -> crate::Result<Option<super::models::BuildOutput>> {
-        let out_path = store_dir.display(out_path).to_string();
-        Ok(sqlx::query_as!(
-            super::models::BuildOutput,
+        let out_paths = path_forms(store_dir, out_path);
+        let row = sqlx::query!(
             r#"
             SELECT
-              id, buildStatus, releaseName, closureSize, size
+              id, buildStatus, releaseName, closureSize, size, o.storeDir
             FROM builds b
             JOIN buildoutputs o on b.id = o.build
-            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = $1;"#,
-            out_path.as_str(),
+            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = ANY($1);"#,
+            &out_paths,
         )
         .fetch_optional(&mut *self.conn)
-        .await?)
+        .await?;
+        row.map(|r| {
+            if let Some(found) = &r.storedir {
+                check_store_dir(store_dir, found)?;
+            }
+            Ok(super::models::BuildOutput {
+                id: r.id,
+                buildstatus: r.buildstatus,
+                releasename: r.releasename,
+                closuresize: r.closuresize,
+                size: r.size,
+            })
+        })
+        .transpose()
     }
 
     pub async fn get_build_products_for_build_id(
         &mut self,
-        build_id: i32,
         store_dir: &StoreDir,
+        build_id: i32,
     ) -> crate::Result<Vec<nix_support::BuildProduct>> {
         let rows = sqlx::query_as!(
             crate::models::BuildProductRow,
@@ -300,6 +367,8 @@ impl Connection {
               fileSize,
               sha256hash,
               path,
+              subPath,
+              storeDir,
               name,
               defaultPath
             FROM buildproducts
@@ -309,7 +378,12 @@ impl Connection {
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter()
-            .map(|r| Ok(r.into_build_product(store_dir)?))
+            .map(|r| {
+                if let Some(found) = &r.storedir {
+                    check_store_dir(store_dir, found)?;
+                }
+                Ok(r.into_build_product(store_dir)?)
+            })
             .collect()
     }
 
@@ -339,6 +413,13 @@ impl Connection {
     /// then look up that drv's `out2`, etc. Returns the final resolved path
     /// for each chain (or `None` if any step fails).
     ///
+    /// This matches drv paths in their converted (basename) form only, so
+    /// while `hydra-backfill-store-dirs` is running it simply will not
+    /// find steps that are still stored as full paths, and reports them
+    /// as unresolved. Content-addressed builds are expected to be
+    /// degraded for the duration rather than have this query carry a
+    /// second matching form through its recursion.
+    ///
     /// # Panics
     ///
     /// Panics if the SQL `ordinality` column is negative (should never happen).
@@ -357,14 +438,14 @@ impl Connection {
                 .iter()
                 .map(|(root, outputs)| {
                     serde_json::json!({
-                        "root": store_dir.display(*root).to_string(),
+                        "root": root.to_string(),
                         "chain": outputs.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
                     })
                 })
                 .collect(),
         );
 
-        let rows = sqlx::query_as::<_, (i32, Option<String>)>(
+        let rows = sqlx::query_as::<_, (i32, Option<String>, Option<String>)>(
             "
             WITH RECURSIVE input AS (
                 SELECT (ordinality)::int AS idx,
@@ -373,23 +454,21 @@ impl Connection {
                 FROM jsonb_array_elements($1::jsonb)
                     WITH ORDINALITY AS t(elem, ordinality)
             ),
-            resolve(idx, drv_path, step) AS (
-                SELECT idx, drv, 1 FROM input
+            resolve(idx, drv_path, drv_storedir, step) AS (
+                SELECT idx, drv, NULL::text, 1 FROM input
 
                 UNION ALL
 
-                SELECT r.idx, sub.path, r.step + 1
+                SELECT r.idx, sub.path, sub.storedir, r.step + 1
                 FROM resolve r
                 JOIN input i ON i.idx = r.idx
                 CROSS JOIN LATERAL (
-                    SELECT o.path
+                    SELECT o.path, o.storedir
                     FROM buildsteps s
                     -- If this step was resolved, look up outputs from
                     -- the resolved drv's successful buildstep instead.
-                    -- resolvedDrvPath is a bare basename; drvPath is a
-                    -- full path, so strip the directory prefix to compare.
                     LEFT JOIN buildsteps sr
-                        ON sr.drvPath = $2 || '/' || s.resolvedDrvPath
+                        ON sr.drvPath = s.resolvedDrvPath
                         AND sr.status = 0
                     JOIN buildstepoutputs o
                         ON o.build = COALESCE(sr.build, s.build)
@@ -404,7 +483,7 @@ impl Connection {
                 WHERE r.step <= array_length(i.chain, 1)
                   AND r.drv_path IS NOT NULL
             )
-            SELECT i.idx, r.drv_path
+            SELECT i.idx, r.drv_path, r.drv_storedir
             FROM input i
             LEFT JOIN resolve r
                 ON r.idx = i.idx
@@ -413,14 +492,15 @@ impl Connection {
             ",
         )
         .bind(&json_input)
-        .bind(store_dir.to_str())
         .fetch_all(&mut *self.conn)
         .await?;
 
         let mut results = vec![None; chains.len()];
-        for (idx, path) in rows {
+        for (idx, path, path_storedir) in rows {
             let i = usize::try_from(idx - 1)?;
-            results[i] = path.map(|p| store_dir.parse(&p)).transpose()?;
+            results[i] = path
+                .map(|p| parse_row_path(store_dir, &p, path_storedir.as_deref()))
+                .transpose()?;
         }
         Ok(results)
     }
@@ -433,10 +513,10 @@ impl Connection {
         drv_path: &StorePath,
         output_name: &OutputName,
     ) -> crate::Result<Option<StorePath>> {
-        let drv_display = store_dir.display(drv_path).to_string();
+        let drv_display = drv_path.to_string();
         let output_name_str: &str = output_name.as_ref();
-        let row: Option<(String,)> = sqlx::query_as(
-            r"SELECT o.path
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            r"SELECT o.path, o.storedir
               FROM buildsteps s
               JOIN buildstepoutputs o
                   ON s.build = o.build AND s.stepnr = o.stepnr
@@ -452,7 +532,8 @@ impl Connection {
         .fetch_optional(&mut *self.conn)
         .await?;
 
-        row.map(|(path,)| Ok(store_dir.parse(&path)?)).transpose()
+        row.map(|(path, found)| parse_row_path(store_dir, &path, found.as_deref()))
+            .transpose()
     }
 }
 
@@ -559,13 +640,14 @@ impl Transaction<'_> {
         name: &str,
         path: &StorePath,
     ) -> crate::Result<()> {
-        let path = store_dir.display(path).to_string();
+        let path = path.to_string();
         // TODO: support inserting multiple at the same time
         sqlx::query!(
-            "UPDATE buildoutputs SET path = $3 WHERE build = $1 AND name = $2",
+            "UPDATE buildoutputs SET path = $3, storedir = $4 WHERE build = $1 AND name = $2",
             build_id,
             name,
             path.as_str(),
+            store_dir.to_str(),
         )
         .execute(&mut *self.tx)
         .await?;
@@ -578,8 +660,8 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         path: &StorePath,
     ) -> crate::Result<Option<i32>> {
-        let path = store_dir.display(path).to_string();
-        Ok(sqlx::query!("SELECT MAX(build) FROM buildsteps WHERE drvPath = $1 and startTime != 0 and stopTime != 0 and status = 1", path.as_str())
+        let paths = path_forms(store_dir, path);
+        Ok(sqlx::query!("SELECT MAX(build) FROM buildsteps WHERE drvPath = ANY($1) and startTime != 0 and stopTime != 0 and status = 1", &paths)
             .fetch_optional(&mut *self.tx)
             .await?
             .and_then(|v| v.max))
@@ -591,7 +673,7 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         path: &StorePath,
     ) -> crate::Result<Option<i32>> {
-        let path = store_dir.display(path).to_string();
+        let paths = path_forms(store_dir, path);
         Ok(sqlx::query!(
             r#"
                   SELECT MAX(s.build) FROM buildsteps s
@@ -599,9 +681,9 @@ impl Transaction<'_> {
                   WHERE startTime != 0
                     AND stopTime != 0
                     AND status = 1
-                    AND path = $1
+                    AND path = ANY($1)
                 "#,
-            path.as_str(),
+            &paths,
         )
         .fetch_optional(&mut *self.tx)
         .await?
@@ -615,7 +697,7 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         name: &str,
     ) -> crate::Result<Option<i32>> {
-        let drv_path = store_dir.display(drv_path).to_string();
+        let drv_paths = path_forms(store_dir, drv_path);
         Ok(sqlx::query!(
             r#"
                   SELECT MAX(s.build) FROM buildsteps s
@@ -623,10 +705,10 @@ impl Transaction<'_> {
                   WHERE startTime != 0
                     AND stopTime != 0
                     AND status = 1
-                    AND drvPath = $1
+                    AND drvPath = ANY($1)
                     AND name = $2
                 "#,
-            drv_path,
+            &drv_paths,
             name,
         )
         .fetch_optional(&mut *self.tx)
@@ -644,7 +726,7 @@ impl Transaction<'_> {
         // build pick the same number and all but one return None and retry.
         // The queue runner serializes the hot dispatch path with an
         // in-process per-build lock, so this only happens on rare paths.
-        let drv_path = store_dir.display(step.drv_path).to_string();
+        let drv_path = step.drv_path.to_string();
         let success = sqlx::query!(
             r#"
               WITH max AS (SELECT MAX(stepnr) AS val FROM buildsteps WHERE build = $1),
@@ -659,6 +741,7 @@ impl Transaction<'_> {
                 stepnr,
                 type,
                 drvPath,
+                storeDir,
                 busy,
                 startTime,
                 stopTime,
@@ -668,7 +751,7 @@ impl Transaction<'_> {
                 errorMsg,
                 machine
               ) VALUES (
-                $1, (SELECT val FROM new_stepnr), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                $1, (SELECT val FROM new_stepnr), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
               )
               ON CONFLICT DO NOTHING
               RETURNING stepnr
@@ -676,6 +759,7 @@ impl Transaction<'_> {
             step.build_id,
             step.r#type as i32,
             drv_path.as_str(),
+            store_dir.to_str(),
             i32::from(step.busy),
             step.start_time,
             step.stop_time,
@@ -704,7 +788,7 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         step: InsertResolvedBuildStep<'_>,
     ) -> crate::Result<Option<i32>> {
-        let drv_path = store_dir.display(step.drv_path).to_string();
+        let drv_path = step.drv_path.to_string();
         let success = sqlx::query!(
             r#"
               WITH max AS (SELECT MAX(stepnr) AS val FROM buildsteps WHERE build = $1),
@@ -719,6 +803,7 @@ impl Transaction<'_> {
                 stepnr,
                 type,
                 drvPath,
+                storeDir,
                 busy,
                 startTime,
                 stopTime,
@@ -727,7 +812,7 @@ impl Transaction<'_> {
                 machine,
                 resolvedDrvPath
               ) VALUES (
-                $1, (SELECT val FROM new_stepnr), $2, $3, 0, $4, $4, $5, $6, $7, $8
+                $1, (SELECT val FROM new_stepnr), $2, $3, $4, 0, $5, $5, $6, $7, $8, $9
               )
               ON CONFLICT DO NOTHING
               RETURNING stepnr
@@ -735,6 +820,7 @@ impl Transaction<'_> {
             step.build_id,
             crate::models::BuildType::Build as i32,
             drv_path.as_str(),
+            store_dir.to_str(),
             step.start_time,
             step.platform,
             BuildStatus::Resolved as i32,
@@ -757,19 +843,17 @@ impl Transaction<'_> {
             return Ok(());
         }
 
-        let mut query_builder =
-            sqlx::QueryBuilder::new("INSERT INTO buildstepoutputs (build, stepnr, name, path) ");
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO buildstepoutputs (build, stepnr, name, path, storedir) ",
+        );
 
         query_builder.push_values(outputs, |mut b, output| {
             b.push_bind(output.build_id)
                 .push_bind(output.step_nr)
                 .push_bind(output.name.as_ref())
-                .push_bind(
-                    output
-                        .path
-                        .as_ref()
-                        .map(|p| store_dir.display(p).to_string()),
-                );
+                .push_bind(output.path.as_ref().map(ToString::to_string))
+                // The check constraint requires storeDir set iff path is.
+                .push_bind(output.path.as_ref().map(|_| store_dir.to_str()));
         });
         let query = query_builder.build();
         query.execute(&mut *self.tx).await?;
@@ -785,14 +869,15 @@ impl Transaction<'_> {
         name: &str,
         path: &StorePath,
     ) -> crate::Result<()> {
-        let path = store_dir.display(path).to_string();
+        let path = path.to_string();
         // TODO: support inserting multiple at the same time
         sqlx::query!(
-            "UPDATE buildstepoutputs SET path = $4 WHERE build = $1 AND stepnr = $2 AND name = $3",
+            "UPDATE buildstepoutputs SET path = $4, storedir = $5 WHERE build = $1 AND stepnr = $2 AND name = $3",
             build_id,
             step_nr,
             name,
             path.as_str(),
+            store_dir.to_str(),
         )
         .execute(&mut *self.tx)
         .await?;
@@ -805,22 +890,22 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         drv_path: &StorePath,
     ) -> crate::Result<BTreeMap<OutputName, StorePath>> {
-        let drv_path = store_dir.display(drv_path).to_string();
-        let items: Vec<(String, String)> = sqlx::query_as(
-            r"SELECT o.name, o.path
+        let drv_paths = path_forms(store_dir, drv_path);
+        let items: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            r"SELECT o.name, o.path, o.storedir
               FROM buildstepoutputs o
               JOIN buildsteps s ON s.build = o.build AND s.stepnr = o.stepnr
-              WHERE s.drvpath = $1 AND o.path IS NOT NULL",
+              WHERE s.drvpath = ANY($1) AND o.path IS NOT NULL",
         )
-        .bind(drv_path)
+        .bind(&drv_paths)
         .fetch_all(&mut *self.tx)
         .await?;
 
         items
             .into_iter()
-            .map(|(name, path)| -> crate::Result<_> {
+            .map(|(name, path, found)| -> crate::Result<_> {
                 let name: OutputName = name.parse()?;
-                let path: StorePath = store_dir.parse(&path)?;
+                let path = parse_row_path(store_dir, &path, found.as_deref())?;
                 Ok((name, path))
             })
             .collect()
@@ -870,16 +955,14 @@ impl Transaction<'_> {
         step_nr: i32,
     ) -> crate::Result<Option<StorePath>> {
         sqlx::query!(
-            "SELECT drvPath FROM BuildSteps WHERE build = $1 AND stepnr = $2",
+            "SELECT drvPath, storeDir FROM BuildSteps WHERE build = $1 AND stepnr = $2",
             build_id,
             step_nr
         )
         .fetch_optional(&mut *self.tx)
         .await?
-        .and_then(|v| v.drvpath)
-        .map(|p| store_dir.parse(&p))
+        .map(|v| parse_row_path(store_dir, &v.drvpath, v.storedir.as_deref()))
         .transpose()
-        .map_err(crate::Error::from)
     }
 
     #[tracing::instrument(skip(self, build_id), err)]
@@ -908,10 +991,12 @@ impl Transaction<'_> {
                 fileSize,
                 sha256hash,
                 path,
+                subPath,
+                storeDir,
                 name,
                 defaultPath
               ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
               )
             "#,
             p.build_id,
@@ -927,6 +1012,8 @@ impl Transaction<'_> {
                 })
             }) as Option<String>,
             p.path,
+            p.sub_path,
+            p.store_dir,
             p.name,
             p.default_path,
         )
@@ -991,16 +1078,18 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         path: &StorePath,
     ) -> crate::Result<()> {
-        let path = store_dir.display(path).to_string();
+        let path = path.to_string();
         sqlx::query!(
             r#"
               INSERT INTO failedpaths (
-                path
+                path,
+                storedir
               ) VALUES (
-                $1
+                $1, $2
               )
             "#,
             path.as_str(),
+            store_dir.to_str(),
         )
         .execute(&mut *self.tx)
         .await?;
@@ -1288,7 +1377,7 @@ impl Transaction<'_> {
         self.delete_build_products_by_build_id(build.id).await?;
 
         for (nr, p) in build.products.iter().enumerate() {
-            let path_str = p.path.print(store_dir);
+            let path_str = p.path.base_path.to_string();
             self.insert_build_product(InsertBuildProduct {
                 build_id: build.id,
                 product_nr: i32::try_from(nr + 1)?,
@@ -1297,6 +1386,8 @@ impl Transaction<'_> {
                 file_size: p.file_size.and_then(|s| i64::try_from(s).ok()),
                 sha256hash: p.sha256hash.as_ref(),
                 path: &path_str,
+                sub_path: &p.path.relative_path,
+                store_dir: store_dir.to_str(),
                 name: &p.name,
                 default_path: &p.default_path,
             })
@@ -1442,13 +1533,13 @@ mod tests {
         status: i32,
         resolved_drv_path: Option<&StorePath>,
     ) {
-        let sd = test_store_dir();
-        sqlx::query("INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, status, resolvedDrvPath) VALUES ($1, $2, 0, 0, $3, $4, $5)")
+        sqlx::query("INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, storeDir, status, resolvedDrvPath) VALUES ($1, $2, 0, 0, $3, $6, $4, $5)")
             .bind(build)
             .bind(stepnr)
-            .bind(sd.display(drv_path).to_string())
+            .bind(drv_path.to_string())
             .bind(status)
             .bind(resolved_drv_path.map(|p| p.to_string()))
+            .bind(test_store_dir().to_str())
             .execute(&mut *conn.conn)
             .await
             .unwrap();
@@ -1462,12 +1553,13 @@ mod tests {
         path: &StorePath,
     ) {
         sqlx::query(
-            "INSERT INTO BuildStepOutputs (build, stepnr, name, path) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO BuildStepOutputs (build, stepnr, name, path, storeDir) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(build)
         .bind(stepnr)
         .bind(name)
-        .bind(test_store_dir().display(path).to_string())
+        .bind(path.to_string())
+        .bind(test_store_dir().to_str())
         .execute(&mut *conn.conn)
         .await
         .unwrap();
@@ -1476,10 +1568,11 @@ mod tests {
     #[tokio::test]
     async fn clear_busy_step_finalizes_only_the_named_step() {
         async fn insert_busy(conn: &mut Connection, build: i32, stepnr: i32, drv: &StorePath) {
-            sqlx::query("INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, status) VALUES ($1, $2, 0, 1, $3, NULL)")
+            sqlx::query("INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, storeDir, status) VALUES ($1, $2, 0, 1, $3, $4, NULL)")
                 .bind(build)
                 .bind(stepnr)
-                .bind(test_store_dir().display(drv).to_string())
+                .bind(drv.to_string())
+                .bind(test_store_dir().to_str())
                 .execute(&mut *conn.conn)
                 .await
                 .unwrap();
@@ -1529,6 +1622,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results, vec![Some(sp("result"))]);
+    }
+
+    /// Rows written before schema version 88 hold a full path and a null
+    /// storeDir. Until `hydra-backfill-store-dirs` converts them, lookups
+    /// have to find them and reads have to parse them.
+    #[tokio::test]
+    async fn finds_and_parses_unconverted_rows() {
+        async fn insert_unconverted(conn: &mut Connection, build: i32, drv: &str, out: &str) {
+            let sd = test_store_dir();
+            sqlx::query(
+                "INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, storeDir, status) \
+                 VALUES ($1, 1, 0, 0, $2, NULL, 0)",
+            )
+            .bind(build)
+            .bind(sd.display(&sp(drv)).to_string())
+            .execute(&mut *conn.conn)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO BuildStepOutputs (build, stepnr, name, path, storeDir) \
+                 VALUES ($1, 1, 'out', $2, NULL)",
+            )
+            .bind(build)
+            .bind(sd.display(&sp(out)).to_string())
+            .execute(&mut *conn.conn)
+            .await
+            .unwrap();
+        }
+
+        let (_pg, mut conn) = setup().await;
+        insert_unconverted(&mut conn, 1, "legacy.drv", "legacy-out").await;
+        // A converted row alongside it, to prove both are visible at once.
+        insert_step(&mut conn, 2, 1, &sp("converted.drv")).await;
+        insert_output(&mut conn, 2, 1, "out", &sp("converted-out")).await;
+
+        let mut tx = conn.begin_transaction().await.unwrap();
+        for (drv, out) in [
+            ("legacy.drv", "legacy-out"),
+            ("converted.drv", "converted-out"),
+        ] {
+            let outputs = tx
+                .find_build_step_outputs(&test_store_dir(), &sp(drv))
+                .await
+                .unwrap();
+            assert_eq!(
+                outputs.get(&on("out")),
+                Some(&sp(out)),
+                "{drv} should resolve to {out} regardless of stored format"
+            );
+        }
     }
 
     #[tokio::test]
