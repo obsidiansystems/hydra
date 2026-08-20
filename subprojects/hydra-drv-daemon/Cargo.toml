@@ -1,0 +1,16 @@
+[package]
+name                   = "hydra-drv-daemon"
+version.workspace      = true
+edition                = "2024"
+license                = "GPL-3.0"
+rust-version.workspace = true
+
+[dependencies]
+clap                 = { workspace = true, features = [ "derive", "env" ] }
+color-eyre.workspace = true
+tokio                = { workspace = true, features = [ "full" ] }
+tracing-subscriber   = { workspace = true, features = [ "env-filter" ] }
+
+daemon-server.workspace       = true
+db.workspace                  = true
+harmonia-store-path.workspace = true

@@ -476,6 +476,45 @@ impl Connection {
             .await
     }
 
+    /// Ensure the hidden jobset used for daemon-submitted builds exists.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn ensure_adhoc_jobset(&mut self) -> sqlx::Result<i32> {
+        let mut tx = self.conn.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO Users (userName, fullName, emailAddress, password)
+             VALUES ('adhoc', 'Ad-hoc', 'adhoc@localhost', '')
+             ON CONFLICT (userName) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO Projects (name, displayName, description, owner, enabled, hidden)
+             VALUES ('adhoc', 'Ad-hoc', 'Ad-hoc builds via drv-daemon', 'adhoc', 1, 1)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO Jobsets
+                (name, project, description, nixExprInput, nixExprPath, emailOverride, type, hidden)
+             VALUES ('adhoc', 'adhoc', 'Ad-hoc builds via drv-daemon', '', '', '', 0, 1)
+             ON CONFLICT (project, name) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let id: i32 =
+            sqlx::query_scalar("SELECT id FROM Jobsets WHERE project = 'adhoc' AND name = 'adhoc'")
+                .fetch_one(&mut *tx)
+                .await?;
+
+        tx.commit().await?;
+        Ok(id)
+    }
+
     /// Read a finished Build and top-level outputs, falling back to prior accepted outputs for cached duplicates.
     #[tracing::instrument(skip(self), err)]
     pub async fn get_finished_build(
@@ -2241,5 +2280,36 @@ mod tests {
         let (_pg, mut conn) = setup().await;
         let got = conn.finished_build_ids(&[]).await.unwrap();
         assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_adhoc_jobset_is_idempotent() {
+        let (_pg, mut conn) = setup().await;
+        let id1 = conn.ensure_adhoc_jobset().await.unwrap();
+        let id2 = conn.ensure_adhoc_jobset().await.unwrap();
+        assert_eq!(id1, id2);
+    }
+
+    #[tokio::test]
+    async fn insert_daemon_build_sets_keep_and_starts_unfinished() {
+        let (_pg, mut conn) = setup().await;
+        let jobset_id = conn.ensure_adhoc_jobset().await.unwrap();
+        let mut tx = conn.begin_transaction().await.unwrap();
+        let build_id = tx
+            .insert_daemon_build(jobset_id, "hello", "/nix/store/foo.drv", "x86_64-linux")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let row: (i32, i32, String, String) =
+            sqlx::query_as("SELECT keep, finished, drvPath, system FROM Builds WHERE id = $1")
+                .bind(build_id)
+                .fetch_one(&mut *conn.conn)
+                .await
+                .unwrap();
+        assert_eq!(row.0, 1, "keep=1 so hydra-update-gc-roots retains outputs");
+        assert_eq!(row.1, 0, "build starts unfinished");
+        assert_eq!(row.2, "/nix/store/foo.drv");
+        assert_eq!(row.3, "x86_64-linux");
     }
 }

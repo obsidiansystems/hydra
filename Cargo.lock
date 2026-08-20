@@ -2010,6 +2010,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-drv-daemon"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "daemon-server",
+ "db",
+ "harmonia-store-path",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hydra-evaluator"
 version = "0.1.0"
 dependencies = [

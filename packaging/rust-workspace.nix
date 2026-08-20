@@ -31,6 +31,8 @@ let
       ../subprojects/hydra-evaluator/src
       ../subprojects/hydra-ws/Cargo.toml
       ../subprojects/hydra-ws/src
+      ../subprojects/hydra-drv-daemon/Cargo.toml
+      ../subprojects/hydra-drv-daemon/src
       ../subprojects/crates
       # For unit tests which want to spin up a fresh database
       ../subprojects/hydra/sql/hydra.sql
@@ -124,5 +126,10 @@ in
   hydra-ws = mkCrate {
     pname = "hydra-ws";
     meta.description = "Hydra ws server (Rust)";
+  };
+
+  hydra-drv-daemon = mkCrate {
+    pname = "hydra-drv-daemon";
+    meta.description = "Hydra drv-daemon: spawn ad-hoc Hydra builds via the nix daemon protocol";
   };
 }
