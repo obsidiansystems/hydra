@@ -141,6 +141,20 @@ sub new {
 
     $self->run_cmd(30, "hydra-init");
 
+    # This process reads the store too, not just the ones it spawns: inflating
+    # a store-path column asks `Hydra::Helper::Nix` where the store is, and it
+    # keeps whichever store it first opens. Left alone it would take the
+    # ambient one and answer every later question about the wrong store, so
+    # open ours here, with this test's settings in scope.
+    #
+    # After `hydra-init`, so that the store is already initialised and opening
+    # it wants no more than shared access.
+    {
+        local @ENV{keys %{$self->{central_env}}} = values %{$self->{central_env}};
+        require Hydra::Helper::Nix;
+        Hydra::Helper::Nix::machineLocalStore();
+    }
+
     return $self;
 }
 

@@ -8,6 +8,7 @@ use File::Basename;
 use Hydra::Config;
 use Hydra::Helper::CatalystUtils;
 use Hydra::Model::DB;
+use Hydra::StorePath;
 use Nix::Store;
 use Encode;
 use Sys::Hostname::Long;
@@ -45,10 +46,23 @@ our @EXPORT = qw(
     registerRoot
     restartBuilds
     runCommand
-    $MACHINE_LOCAL_STORE
+    machineLocalStore
     );
 
-our $MACHINE_LOCAL_STORE = Nix::Store->new();
+# The store Hydra is running against, opened on first use.
+#
+# Not at load: opening a store is real work, and doing it while this module is
+# being compiled settles which store we mean before the caller has had any say.
+# That is how the test harness ended up holding the ambient `/nix/store` while
+# every path it cared about lived in its own.
+{
+    my $machineLocalStore;
+
+    sub machineLocalStore {
+        $machineLocalStore //= Nix::Store->new();
+        return $machineLocalStore;
+    }
+}
 
 
 sub getHydraHome {
@@ -133,8 +147,8 @@ sub getGCRootsDir {
 
 
 sub gcRootFor {
-    my ($path) = @_;
-    return getGCRootsDir . "/" . basename $path;
+    my ($storePath) = @_;
+    return getGCRootsDir . "/$storePath";
 }
 
 
@@ -148,7 +162,7 @@ sub registerRoot {
     # valid, rather than testing the path on this filesystem.
     if (-l $link) {
         my $target = readlink $link;
-        return if defined $target && $MACHINE_LOCAL_STORE->isValidPath($target);
+        return if defined $target && machineLocalStore()->isValidPath(parseStorePath(machineLocalStore()->storeDir, $target));
         # Stale symlink: remove it so we can replace it below.
         unlink $link;
     }
@@ -183,7 +197,8 @@ sub jobsetOverview {
 # if the log is gone.
 sub getDrvLogPath {
     my ($drvPath) = @_;
-    my $base = basename $drvPath;
+    # Logs are bucketed by the first two characters of the store path.
+    my $base = $drvPath->to_string;
     my $bucketed = substr($base, 0, 2) . "/" . substr($base, 2);
     my $fn = Hydra::Model::DB::getHydraPath . "/build-logs/";
     for ($fn . $bucketed, $fn . $bucketed . ".bz2") {
@@ -212,8 +227,10 @@ sub findLog {
     # that haven't built yet or failed to build may have a NULL outPath.
     @outPaths = grep {defined} @outPaths;
 
+    # `search` does not deflate, so the store directory has to go back on
+    # by hand for the query.
     my @steps = $c->model('DB::BuildSteps')->search(
-        { path => { -in => [@outPaths] } },
+        { path => { -in => [map { printStorePath($c->model('DB')->schema->storeDir, $_) } @outPaths] } },
         { select => ["drvpath"]
         , distinct => 1
         , join => "buildstepoutputs"
@@ -532,7 +549,7 @@ sub restartBuilds {
     $builds = $builds->search({ finished => 1 });
 
     foreach my $build ($builds->search({}, { columns => ["drvpath"] })) {
-        next if !$MACHINE_LOCAL_STORE->isValidPath($build->drvpath);
+        next if !machineLocalStore()->isValidPath($build->drvpath);
         registerRoot $build->drvpath;
     }
 
@@ -606,7 +623,9 @@ sub addToStore {
     my ($stdout, $stderr);
     run3(['nix-store', '--add', $path], \undef, \$stdout, \$stderr);
     die "cannot add path $path to the Nix store: $stderr\n" if $? != 0;
-    return trim($stdout);
+    # `nix-store --add` prints a full path; strip it here rather than at each
+    # caller, this being where it enters Hydra.
+    return parseStorePath(machineLocalStore()->storeDir, trim($stdout));
 }
 
 1;

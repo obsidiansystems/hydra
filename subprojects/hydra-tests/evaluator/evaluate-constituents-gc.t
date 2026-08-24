@@ -2,6 +2,8 @@ use strict;
 use warnings;
 use Setup;
 use Test2::V0;
+use Hydra::Helper::Nix;
+use Hydra::StorePath;
 
 my $ctx = test_context();
 
@@ -59,11 +61,11 @@ is(\%actual_constituents, \%expected_constituents, "Exact aggregate constituents
 # Check that deletion also doesn't work accordingly
 
 my ($res);
-($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', $constituentA->drvpath);
+($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', printStorePath(machineLocalStore()->storeDir, $constituentA->drvpath));
 is($res, 256, "Deleting a constituent derivation fails");
-($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', $directAggregate->drvpath);
+($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', printStorePath(machineLocalStore()->storeDir, $directAggregate->drvpath));
 is($res, 256, "Deleting the direct aggregate derivation fails");
-($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', $indirectAggregate->drvpath);
+($res) = $ctx->capture_cmd(15, 'nix-store', '--delete', printStorePath(machineLocalStore()->storeDir, $indirectAggregate->drvpath));
 is($res, 256, "Deleting the indirect aggregate derivation fails");
 
 done_testing;
