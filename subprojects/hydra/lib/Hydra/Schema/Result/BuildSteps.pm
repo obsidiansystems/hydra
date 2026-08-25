@@ -61,7 +61,8 @@ __PACKAGE__->table("buildsteps");
 =head2 storedir
 
   data_type: 'text'
-  is_nullable: 1
+  is_foreign_key: 1
+  is_nullable: 0
 
 =head2 busy
 
@@ -137,7 +138,7 @@ __PACKAGE__->add_columns(
   "drvpath",
   { data_type => "text", is_nullable => 0 },
   "storedir",
-  { data_type => "text", is_nullable => 1 },
+  { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "busy",
   { data_type => "integer", is_nullable => 0 },
   "status",
@@ -178,6 +179,27 @@ __PACKAGE__->add_columns(
 
 __PACKAGE__->set_primary_key("build", "stepnr");
 
+=head1 UNIQUE CONSTRAINTS
+
+=head2 C<buildsteps_storedir_build_stepnr_key>
+
+=over 4
+
+=item * L</storedir>
+
+=item * L</build>
+
+=item * L</stepnr>
+
+=back
+
+=cut
+
+__PACKAGE__->add_unique_constraint(
+  "buildsteps_storedir_build_stepnr_key",
+  ["storedir", "build", "stepnr"],
+);
+
 =head1 RELATIONS
 
 =head2 build
@@ -191,7 +213,7 @@ Related object: L<Hydra::Schema::Result::Builds>
 __PACKAGE__->belongs_to(
   "build",
   "Hydra::Schema::Result::Builds",
-  { id => "build" },
+  { id => "build", storedir => "storedir" },
   { is_deferrable => 0, on_delete => "CASCADE", on_update => "NO ACTION" },
 );
 
@@ -207,6 +229,25 @@ __PACKAGE__->has_many(
   "buildstepoutputs",
   "Hydra::Schema::Result::BuildStepOutputs",
   { "foreign.build" => "self.build", "foreign.stepnr" => "self.stepnr" },
+  undef,
+);
+
+=head2 buildstepoutputs_storedir_build_stepnrs
+
+Type: has_many
+
+Related object: L<Hydra::Schema::Result::BuildStepOutputs>
+
+=cut
+
+__PACKAGE__->has_many(
+  "buildstepoutputs_storedir_build_stepnrs",
+  "Hydra::Schema::Result::BuildStepOutputs",
+  {
+    "foreign.build"    => "self.build",
+    "foreign.stepnr"   => "self.stepnr",
+    "foreign.storedir" => "self.storedir",
+  },
   undef,
 );
 
@@ -231,8 +272,8 @@ __PACKAGE__->belongs_to(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-08-05 13:21:19
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:gkSY9h7g4HtV9rh+YeAutA
+# Created by DBIx::Class::Schema::Loader v0.07051 @ 2026-08-05 13:45:43
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:U41gnQ2HfZUls4lpeTfTmw
 
 
 # Find the step that this Resolved (status=13) step was resolved to, or
@@ -254,12 +295,11 @@ sub resolved_terminal {
     return undef unless defined $resolved;
 
     # Resolution stays within the build that requested the work. `search` does
-    # not deflate, and `drvpath` may still hold either format, so both
-    # spellings go in by hand.
+    # not deflate, so the basename goes in by hand.
     return $self->result_source->resultset->search(
         {
             build   => $self->get_column('build'),
-            drvpath => { -in => storePathForms($self->result_source->schema->storeDir, $resolved) },
+            drvpath => $resolved->to_string,
             # A real terminal is never itself Resolved.
             status  => [ undef, { '!=' => 13 } ],
         },

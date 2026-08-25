@@ -32,31 +32,6 @@ fn check_store_dir(store_dir: &StoreDir, found: &str) -> crate::Result<()> {
     }
 }
 
-/// Parse a store path out of a row, in whichever of the two formats it
-/// is stored in: a converted row holds the basename and records its
-/// store in storeDir, while one that `hydra-backfill-store-dirs` has not
-/// reached yet holds the full path and a null storeDir.
-fn parse_row_path(
-    store_dir: &StoreDir,
-    path: &str,
-    row_store_dir: Option<&str>,
-) -> crate::Result<StorePath> {
-    match row_store_dir {
-        Some(found) => {
-            check_store_dir(store_dir, found)?;
-            Ok(StorePath::from_base_path(path)?)
-        }
-        None => Ok(store_dir.parse(path)?),
-    }
-}
-
-/// Both stored forms of a path, for lookups that have to find a row
-/// whether or not it has been converted yet. Bound against `= ANY(...)`,
-/// so the existing indexes on these columns still serve the lookup.
-fn path_forms(store_dir: &StoreDir, path: &StorePath) -> Vec<String> {
-    vec![path.to_string(), store_dir.display(path).to_string()]
-}
-
 #[derive(Debug)]
 pub struct Transaction<'a> {
     tx: sqlx::PgTransaction<'a>,
@@ -117,13 +92,14 @@ impl Connection {
         .await?;
         rows.into_iter()
             .map(|r| {
+                check_store_dir(store_dir, &r.storedir)?;
                 Ok(Build {
                     id: r.id,
                     jobset_id: r.jobset_id,
                     project: r.project,
                     jobset: r.jobset,
                     job: r.job,
-                    drvpath: parse_row_path(store_dir, &r.drvpath, r.storedir.as_deref())?,
+                    drvpath: StorePath::from_base_path(&r.drvpath)?,
                     maxsilent: r.maxsilent,
                     timeout: r.timeout,
                     timestamp: i64::from(r.timestamp),
@@ -210,10 +186,11 @@ impl Connection {
         store_dir: &StoreDir,
         paths: &[StorePath],
     ) -> crate::Result<bool> {
-        let paths: Vec<String> = paths.iter().flat_map(|p| path_forms(store_dir, p)).collect();
+        let paths: Vec<String> = paths.iter().map(ToString::to_string).collect();
         Ok(!sqlx::query!(
-            "SELECT path FROM failedpaths where path = ANY($1)",
+            "SELECT path FROM failedpaths where path = ANY($1) and storeDir = $2",
             &paths,
+            store_dir.to_str(),
         )
         .fetch_all(&mut *self.conn)
         .await?
@@ -324,22 +301,20 @@ impl Connection {
         store_dir: &StoreDir,
         out_path: &StorePath,
     ) -> crate::Result<Option<super::models::BuildOutput>> {
-        let out_paths = path_forms(store_dir, out_path);
+        let out_path = out_path.to_string();
         let row = sqlx::query!(
             r#"
             SELECT
-              id, buildStatus, releaseName, closureSize, size, o.storeDir
+              id, buildStatus, releaseName, closureSize, size, o.storeDir as "storedir!"
             FROM builds b
             JOIN buildoutputs o on b.id = o.build
-            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = ANY($1);"#,
-            &out_paths,
+            WHERE finished = 1 and (buildStatus = 0 or buildStatus = 6) and path = $1;"#,
+            out_path.as_str(),
         )
         .fetch_optional(&mut *self.conn)
         .await?;
         row.map(|r| {
-            if let Some(found) = &r.storedir {
-                check_store_dir(store_dir, found)?;
-            }
+            check_store_dir(store_dir, &r.storedir)?;
             Ok(super::models::BuildOutput {
                 id: r.id,
                 buildstatus: r.buildstatus,
@@ -382,7 +357,7 @@ impl Connection {
                 if let Some(found) = &r.storedir {
                     check_store_dir(store_dir, found)?;
                 }
-                Ok(r.into_build_product(store_dir)?)
+                Ok(r.into_build_product()?)
             })
             .collect()
     }
@@ -412,13 +387,6 @@ impl Connection {
     /// look up `root.drv`'s `out1` output to get an intermediate drv path,
     /// then look up that drv's `out2`, etc. Returns the final resolved path
     /// for each chain (or `None` if any step fails).
-    ///
-    /// This matches drv paths in their converted (basename) form only, so
-    /// while `hydra-backfill-store-dirs` is running it simply will not
-    /// find steps that are still stored as full paths, and reports them
-    /// as unresolved. Content-addressed builds are expected to be
-    /// degraded for the duration rather than have this query carry a
-    /// second matching form through its recursion.
     ///
     /// # Panics
     ///
@@ -498,9 +466,10 @@ impl Connection {
         let mut results = vec![None; chains.len()];
         for (idx, path, path_storedir) in rows {
             let i = usize::try_from(idx - 1)?;
-            results[i] = path
-                .map(|p| parse_row_path(store_dir, &p, path_storedir.as_deref()))
-                .transpose()?;
+            if let Some(found) = &path_storedir {
+                check_store_dir(store_dir, found)?;
+            }
+            results[i] = path.map(|p| StorePath::from_base_path(&p)).transpose()?;
         }
         Ok(results)
     }
@@ -515,7 +484,7 @@ impl Connection {
     ) -> crate::Result<Option<StorePath>> {
         let drv_display = drv_path.to_string();
         let output_name_str: &str = output_name.as_ref();
-        let row: Option<(String, Option<String>)> = sqlx::query_as(
+        let row: Option<(String, String)> = sqlx::query_as(
             r"SELECT o.path, o.storedir
               FROM buildsteps s
               JOIN buildstepoutputs o
@@ -532,8 +501,11 @@ impl Connection {
         .fetch_optional(&mut *self.conn)
         .await?;
 
-        row.map(|(path, found)| parse_row_path(store_dir, &path, found.as_deref()))
-            .transpose()
+        row.map(|(path, found)| {
+            check_store_dir(store_dir, &found)?;
+            Ok(StorePath::from_base_path(&path)?)
+        })
+        .transpose()
     }
 }
 
@@ -660,8 +632,10 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         path: &StorePath,
     ) -> crate::Result<Option<i32>> {
-        let paths = path_forms(store_dir, path);
-        Ok(sqlx::query!("SELECT MAX(build) FROM buildsteps WHERE drvPath = ANY($1) and startTime != 0 and stopTime != 0 and status = 1", &paths)
+        // For these MAX() lookups the store-dir agreement is part of the
+        // match predicate: a row from another store can never satisfy it.
+        let path = path.to_string();
+        Ok(sqlx::query!("SELECT MAX(build) FROM buildsteps WHERE drvPath = $1 and storeDir = $2 and startTime != 0 and stopTime != 0 and status = 1", path.as_str(), store_dir.to_str())
             .fetch_optional(&mut *self.tx)
             .await?
             .and_then(|v| v.max))
@@ -673,7 +647,7 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         path: &StorePath,
     ) -> crate::Result<Option<i32>> {
-        let paths = path_forms(store_dir, path);
+        let path = path.to_string();
         Ok(sqlx::query!(
             r#"
                   SELECT MAX(s.build) FROM buildsteps s
@@ -681,9 +655,11 @@ impl Transaction<'_> {
                   WHERE startTime != 0
                     AND stopTime != 0
                     AND status = 1
-                    AND path = ANY($1)
+                    AND path = $1
+                    AND o.storeDir = $2
                 "#,
-            &paths,
+            path.as_str(),
+            store_dir.to_str(),
         )
         .fetch_optional(&mut *self.tx)
         .await?
@@ -697,7 +673,7 @@ impl Transaction<'_> {
         drv_path: &StorePath,
         name: &str,
     ) -> crate::Result<Option<i32>> {
-        let drv_paths = path_forms(store_dir, drv_path);
+        let drv_path = drv_path.to_string();
         Ok(sqlx::query!(
             r#"
                   SELECT MAX(s.build) FROM buildsteps s
@@ -705,11 +681,13 @@ impl Transaction<'_> {
                   WHERE startTime != 0
                     AND stopTime != 0
                     AND status = 1
-                    AND drvPath = ANY($1)
+                    AND drvPath = $1
                     AND name = $2
+                    AND s.storeDir = $3
                 "#,
-            &drv_paths,
+            drv_path,
             name,
+            store_dir.to_str(),
         )
         .fetch_optional(&mut *self.tx)
         .await?
@@ -890,22 +868,23 @@ impl Transaction<'_> {
         store_dir: &StoreDir,
         drv_path: &StorePath,
     ) -> crate::Result<BTreeMap<OutputName, StorePath>> {
-        let drv_paths = path_forms(store_dir, drv_path);
-        let items: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        let drv_path = drv_path.to_string();
+        let items: Vec<(String, String, String)> = sqlx::query_as(
             r"SELECT o.name, o.path, o.storedir
               FROM buildstepoutputs o
               JOIN buildsteps s ON s.build = o.build AND s.stepnr = o.stepnr
-              WHERE s.drvpath = ANY($1) AND o.path IS NOT NULL",
+              WHERE s.drvpath = $1 AND o.path IS NOT NULL",
         )
-        .bind(&drv_paths)
+        .bind(drv_path)
         .fetch_all(&mut *self.tx)
         .await?;
 
         items
             .into_iter()
             .map(|(name, path, found)| -> crate::Result<_> {
+                check_store_dir(store_dir, &found)?;
                 let name: OutputName = name.parse()?;
-                let path = parse_row_path(store_dir, &path, found.as_deref())?;
+                let path = StorePath::from_base_path(&path)?;
                 Ok((name, path))
             })
             .collect()
@@ -961,7 +940,10 @@ impl Transaction<'_> {
         )
         .fetch_optional(&mut *self.tx)
         .await?
-        .map(|v| parse_row_path(store_dir, &v.drvpath, v.storedir.as_deref()))
+        .map(|v| {
+            check_store_dir(store_dir, &v.storedir)?;
+            Ok(StorePath::from_base_path(&v.drvpath)?)
+        })
         .transpose()
     }
 
@@ -1622,56 +1604,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results, vec![Some(sp("result"))]);
-    }
-
-    /// Rows written before schema version 88 hold a full path and a null
-    /// storeDir. Until `hydra-backfill-store-dirs` converts them, lookups
-    /// have to find them and reads have to parse them.
-    #[tokio::test]
-    async fn finds_and_parses_unconverted_rows() {
-        async fn insert_unconverted(conn: &mut Connection, build: i32, drv: &str, out: &str) {
-            let sd = test_store_dir();
-            sqlx::query(
-                "INSERT INTO BuildSteps (build, stepnr, type, busy, drvPath, storeDir, status) \
-                 VALUES ($1, 1, 0, 0, $2, NULL, 0)",
-            )
-            .bind(build)
-            .bind(sd.display(&sp(drv)).to_string())
-            .execute(&mut *conn.conn)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO BuildStepOutputs (build, stepnr, name, path, storeDir) \
-                 VALUES ($1, 1, 'out', $2, NULL)",
-            )
-            .bind(build)
-            .bind(sd.display(&sp(out)).to_string())
-            .execute(&mut *conn.conn)
-            .await
-            .unwrap();
-        }
-
-        let (_pg, mut conn) = setup().await;
-        insert_unconverted(&mut conn, 1, "legacy.drv", "legacy-out").await;
-        // A converted row alongside it, to prove both are visible at once.
-        insert_step(&mut conn, 2, 1, &sp("converted.drv")).await;
-        insert_output(&mut conn, 2, 1, "out", &sp("converted-out")).await;
-
-        let mut tx = conn.begin_transaction().await.unwrap();
-        for (drv, out) in [
-            ("legacy.drv", "legacy-out"),
-            ("converted.drv", "converted-out"),
-        ] {
-            let outputs = tx
-                .find_build_step_outputs(&test_store_dir(), &sp(drv))
-                .await
-                .unwrap();
-            assert_eq!(
-                outputs.get(&on("out")),
-                Some(&sp(out)),
-                "{drv} should resolve to {out} regardless of stored format"
-            );
-        }
     }
 
     #[tokio::test]

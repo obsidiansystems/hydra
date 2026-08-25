@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT path FROM failedpaths where path = ANY($1)",
+  "query": "SELECT path FROM failedpaths where path = ANY($1) and storeDir = $2",
   "describe": {
     "columns": [
       {
@@ -11,12 +11,13 @@
     ],
     "parameters": {
       "Left": [
-        "TextArray"
+        "TextArray",
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "b0f2aab8d3aae78a8c695d0a9433b19cb5ba6806d74c252593b76243e1c8c853"
+  "hash": "768ef1b7542e7686f160e075f1efcb58030c4b3b972ed172f207105e36fd0c21"
 }
