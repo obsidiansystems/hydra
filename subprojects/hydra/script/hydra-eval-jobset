@@ -381,7 +381,6 @@ sub evalJobsCmd {
             or die "cannot find the input containing the job expression\n";
 
         @cmd = ("nix-eval-jobs",
-                "--option", "restrict-eval", "true",
                 "<" . $nixExprInputName . "/" . $nixExprPath . ">",
                 inputsToArgs($inputInfo));
     }
