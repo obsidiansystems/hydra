@@ -2017,9 +2017,17 @@ dependencies = [
  "color-eyre",
  "daemon-server",
  "db",
+ "fs-err",
  "harmonia-store-path",
+ "hydra-tracing",
+ "listenfd",
+ "sd-notify",
+ "secrecy",
+ "serde",
+ "thiserror",
  "tokio",
- "tracing-subscriber",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

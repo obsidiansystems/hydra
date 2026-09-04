@@ -3,17 +3,22 @@
 . ./foreman/common.sh
 
 wait_for_postgres
-
-# wait until the hydra database exists (hydra-server creates it)
-while ! psql -h "$HYDRA_PG_SOCKET_DIR" -p "$HYDRA_PG_PORT" -d hydra -c 'SELECT 1' >/dev/null 2>&1; do sleep 1; done
-
+wait_for_hydra_db
 wait_for_hydra_server
 
-DAEMON_SOCK="$HYDRA_DATA/drv-daemon.sock"
-UPSTREAM_SOCK="${NIX_DAEMON_SOCKET_PATH:-/nix/var/nix/daemon-socket/socket}"
+CONFIG="$HYDRA_DATA/drv-daemon.toml"
 
-export HYDRA_DBA="postgres://${USER}@localhost:$HYDRA_PG_PORT/hydra"
+# Generate a config for the drv-daemon if it doesn't exist
+if [ ! -f "$CONFIG" ]; then
+    cat <<EOT > "$CONFIG"
+upstreamSocket = "${NIX_DAEMON_SOCKET_PATH:-/nix/var/nix/daemon-socket/socket}"
+EOT
+fi
 
-exec hydra-drv-daemon \
-    --socket "$DAEMON_SOCK" \
-    --upstream-socket "$UPSTREAM_SOCK"
+export HYDRA_DATABASE_URL="postgres://${USER}@localhost:$HYDRA_PG_PORT/hydra"
+
+# TODO: the other services get their listeners from foreman via the
+# Socketfile, but the fork only knows how to bind TCP addresses. Once
+# it can hand out a Unix domain socket, declare this one there and pass
+# `--socket -` like the NixOS module does.
+exec hydra-drv-daemon --socket "$HYDRA_DATA/drv-daemon.sock" -c "$CONFIG"

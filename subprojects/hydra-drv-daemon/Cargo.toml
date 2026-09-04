@@ -6,11 +6,22 @@ license                = "GPL-3.0"
 rust-version.workspace = true
 
 [dependencies]
-clap                 = { workspace = true, features = [ "derive", "env" ] }
+clap                 = { workspace = true, features = [ "derive" ] }
 color-eyre.workspace = true
+fs-err.workspace     = true
+hydra-tracing        = { workspace = true }
+listenfd.workspace   = true
+sd-notify.workspace  = true
+secrecy              = { workspace = true, features = [ "serde" ] }
+serde                = { workspace = true, features = [ "derive" ] }
+thiserror.workspace  = true
 tokio                = { workspace = true, features = [ "full" ] }
-tracing-subscriber   = { workspace = true, features = [ "env-filter" ] }
+toml.workspace       = true
+tracing.workspace    = true
 
 daemon-server.workspace       = true
 db.workspace                  = true
 harmonia-store-path.workspace = true
+
+[features]
+otel = [ "hydra-tracing/otel" ]

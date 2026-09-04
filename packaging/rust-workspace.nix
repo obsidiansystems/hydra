@@ -65,6 +65,7 @@ let
     "hydra-builder/otel"
     "hydra-queue-runner/otel"
     "hydra-ws/otel"
+    "hydra-drv-daemon/otel"
   ];
 
   # `cargoArtifacts` is a whole-workspace `buildDepsOnly`, so its dependencies

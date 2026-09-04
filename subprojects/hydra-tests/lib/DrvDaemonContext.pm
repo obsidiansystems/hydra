@@ -89,17 +89,21 @@ sub _spawn_upstream {
 sub _spawn_drv_daemon {
     my ($self) = @_;
     my $ctx = $self->{ctx};
-    my $db_url = $ctx->{central}{hydra_database_url};
-    my $store_dir = $ctx->{central}{nix_store_dir};
+
+    # The database URL comes from HYDRA_DATABASE_URL in central_env,
+    # which overrides whatever the config file says.
+    my $config = "$ctx->{tmpdir}/drv-daemon.toml";
+    open(my $fh, '>', $config) or die "cannot write $config: $!\n";
+    print $fh "upstreamSocket = \"$self->{upstream_sock}\"\n";
+    print $fh "storeDir = \"$ctx->{central}{nix_store_dir}\"\n";
+    close $fh;
 
     $self->{pre_pg}->spawn(
         "drv-daemon",
         [
             "hydra-drv-daemon",
-            "--socket",          $self->{daemon_sock},
-            "--upstream-socket", $self->{upstream_sock},
-            "--db-url",          $db_url,
-            "--store-dir",       $store_dir,
+            "--socket",      $self->{daemon_sock},
+            "--config-path", $config,
         ],
         env => { RUST_LOG => "hydra_drv_daemon=debug,info" },
     );

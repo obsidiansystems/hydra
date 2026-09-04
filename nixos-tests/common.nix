@@ -16,6 +16,7 @@ in
       imports = [
         nixosModules.web-app
         nixosModules.queue-runner
+        nixosModules.drv-daemon
       ];
 
       services.hydra-dev.enable = true;
@@ -24,6 +25,8 @@ in
 
       services.hydra-queue-runner-dev.enable = true;
       services.hydra-queue-runner-dev.grpc.address = "[::]";
+
+      services.hydra-drv-daemon-dev.enable = true;
 
       systemd.services.hydra-send-stats.enable = false;
 

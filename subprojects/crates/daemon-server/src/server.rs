@@ -403,7 +403,11 @@ where
 #[derive(Debug)]
 pub struct DaemonServer<H> {
     handler: H,
-    socket_path: PathBuf,
+    listener: UnixListener,
+    /// Set when we created the socket file ourselves and so own its
+    /// removal on shutdown. An inherited listener (socket activation)
+    /// belongs to whoever handed it to us.
+    owned_path: Option<PathBuf>,
     store_dir: StoreDir,
 }
 
@@ -411,10 +415,42 @@ impl<H> DaemonServer<H>
 where
     H: HandshakeDaemonStore + Clone + Send + Sync + 'static,
 {
-    pub fn new(handler: H, socket_path: PathBuf, store_dir: StoreDir) -> Self {
+    /// Create the socket at `socket_path`, replacing any stale one.
+    pub fn bind(handler: H, socket_path: PathBuf, store_dir: StoreDir) -> std::io::Result<Self> {
+        if socket_path.exists() {
+            fs_err::remove_file(&socket_path)?;
+        }
+        if let Some(parent) = socket_path.parent() {
+            fs_err::create_dir_all(parent)?;
+        }
+
+        let listener = UnixListener::bind(&socket_path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // 0660 allows hydra-group clients without opening build submission to all local users.
+            let perms = std::fs::Permissions::from_mode(0o660);
+            fs_err::set_permissions(&socket_path, perms)?;
+        }
+
+        info!("nix daemon listening on {:?}", socket_path);
+        Ok(Self {
+            handler,
+            listener,
+            owned_path: Some(socket_path),
+            store_dir,
+        })
+    }
+
+    /// Serve on a listener somebody else bound, typically one passed
+    /// down by systemd socket activation. Permissions and lifetime of
+    /// the socket file are theirs to manage.
+    pub fn from_listener(handler: H, listener: UnixListener, store_dir: StoreDir) -> Self {
         Self {
             handler,
-            socket_path,
+            listener,
+            owned_path: None,
             store_dir,
         }
     }
@@ -424,7 +460,8 @@ where
         self.serve_until(std::future::pending::<()>()).await
     }
 
-    /// Serve until `shutdown` resolves, then unlink the socket.
+    /// Serve until `shutdown` resolves, then unlink the socket if we
+    /// created it.
     ///
     /// For a caller whose server exists only for the duration of
     /// something else — an evaluation, a test — rather than for the
@@ -435,39 +472,18 @@ where
         &self,
         shutdown: impl Future<Output = ()>,
     ) -> Result<(), std::io::Error> {
-        let listener = self.bind()?;
-        let accept_loop = self.accept_loop(&listener);
+        let accept_loop = self.accept_loop(&self.listener);
         tokio::select! {
             result = accept_loop => result,
             () = shutdown => {
-                info!("shutting down nix daemon on {:?}", self.socket_path);
-                // Best-effort: a caller may have unlinked it already.
-                let _ = fs_err::remove_file(&self.socket_path);
+                info!("shutting down nix daemon");
+                if let Some(path) = &self.owned_path {
+                    // Best-effort: a caller may have unlinked it already.
+                    let _ = fs_err::remove_file(path);
+                }
                 Ok(())
             }
         }
-    }
-
-    fn bind(&self) -> Result<UnixListener, std::io::Error> {
-        if self.socket_path.exists() {
-            fs_err::remove_file(&self.socket_path)?;
-        }
-        if let Some(parent) = self.socket_path.parent() {
-            fs_err::create_dir_all(parent)?;
-        }
-
-        let listener = UnixListener::bind(&self.socket_path)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // 0660 allows hydra-group clients without opening build submission to all local users.
-            let perms = std::fs::Permissions::from_mode(0o660);
-            fs_err::set_permissions(&self.socket_path, perms)?;
-        }
-
-        info!("nix daemon listening on {:?}", self.socket_path);
-        Ok(listener)
     }
 
     async fn accept_loop(&self, listener: &UnixListener) -> Result<(), std::io::Error> {
