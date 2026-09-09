@@ -91,7 +91,10 @@ sub build_GET {
     $c->stash->{drvAvailable} = machineLocalStore()->isValidPath($build->drvpath);
 
     if ($build->finished && $build->iscachedbuild) {
-        my $path = ($build->buildoutputs)[0]->path or undef;
+        # A build filed without pre-inserted outputs (an ad hoc one, say)
+        # may have none recorded yet.
+        my ($firstOutput) = $build->buildoutputs;
+        my $path = $firstOutput ? $firstOutput->path : undef;
         my $cachedBuildStep = findBuildStepByOutPath($self, $c, $path);
         if (defined $cachedBuildStep) {
             $c->stash->{cachedBuild} = $cachedBuildStep->build;
